@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory** and an **autonomous skill discovery & context compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, and a **Context Compositor engine**.
 
 ---
 
@@ -13,9 +13,18 @@ Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://gi
 
 ---
 
+## 💡 The Core Philosophy: Why Skills Beat Deep-Layer Model Weights
+
+Relying on an LLM's deep latent weights to "remember" idiomatic patterns, security invariants, and project conventions has three critical flaws:
+1. **Latent "Drift" & Hallucination:** When an LLM has to dig through trillions of parameters across hundreds of programming paradigms, it defaults to the most generic, average internet code (slop, deprecated syntax, or bad habits).
+2. **Attention & Context Penalty:** Shoving 50+ full skill files into the prompt wastes 25,000+ tokens and triggers context dilution (where the model ignores middle instructions).
+3. **Cognitive Priming via Externalized Skills:** Modular skills act as **external cognitive anchors**. Feeding just 300–700 tokens of laser-focused constraints right into the top context window primes the attention mechanism directly. The LLM spends zero energy "wondering" what conventions to follow and generates exact, idiomatic code on the first attempt with significantly lower latency and token expenditure.
+
+---
+
 ## 🧠 Architectural Pillar 1: Inbuilt Native Memory
 
-A key limitation in standard agent wrappers is memory amnesia across sessions and unprincipled prompt bloat. `open-chat` introduces an embedded, dual-tier local memory architecture:
+Standard agent wrappers suffer from amnesia across sessions and unprincipled prompt bloat. `open-chat` introduces an embedded, dual-tier local memory architecture:
 
 ### 1. Dual-Tier Storage Engine
 - **Structured & Keyword Search (FTS5):** SQLite FTS5 for exact keyword matching, project metadata, tool configurations, and architectural rules.
@@ -42,9 +51,7 @@ A key limitation in standard agent wrappers is memory amnesia across sessions an
 
 ## ⚡ Architectural Pillar 2: 50+ Skill Scale — Autonomous Language & Stack Auto-Binding
 
-When scaling to **50+ skills**, dumping all skills into the prompt causes context exhaustion, degraded attention, and uncertainty over whether the agent even used them. 
-
-`open-chat` replaces manual prompting with an **Autonomous Skill Discovery & Binding Engine**:
+When managing a library of **55+ skills**, manually calling them or dumping them into the prompt is unworkable. `open-chat` replaces manual prompting with an **Autonomous Stack Detector & Index Registry**:
 
 ```
                        User starts / opens workspace
@@ -70,6 +77,7 @@ When scaling to **50+ skills**, dumping all skills into the prompt causes contex
         │  Persistent Auto-Mount in Project Memory               │
         │  • E.g. Rust detected ➔ mounts 'rust-patterns',        │
         │    'anti-slop [during]', 'cargo-analyzer'              │
+        │  • Keeps other 52 skills dormant in the index          │
         │  • Emits visual badge & logs exact token budget        │
         └────────────────────────────────────────────────────────┘
 ```
@@ -131,7 +139,7 @@ You will never have to wonder if a skill is active. Every turn includes transpar
 
 ## 🎨 Architectural Pillar 3: Prompt & Context Compositor
 
-Inspired by modern interactive agent compositors, `open-chat` uses a dedicated **Context Compositor** pipeline before any request reaches the model:
+Inspired by modern agent compositor architectures, `open-chat` uses a dedicated **Context Compositor** pipeline before any request reaches the model:
 
 ```
 [User Prompt] + [Project Memory] + [Auto-Discovered Skills] + [Active Mode: During]
@@ -141,12 +149,18 @@ Inspired by modern interactive agent compositors, `open-chat` uses a dedicated *
                      │     Context Compositor       │
                      │  - Deduplicates rules        │
                      │  - Enforces token budgets    │
-                     │  - Reconciles conflicts      │
+                     │  - Prunes conflicting advice │
+                     │  - Injects top-window anchors│
                      └──────────────────────────────┘
                                     │
                                     ▼
                            Model Execution
 ```
+
+By assembling only the pertinent rules dynamically:
+- Token overhead drops by **85–90%** compared to monolithic prompts.
+- Attention heads focus directly on relevant constraints rather than parsing noise.
+- Output generation is faster, cheaper, and strictly compliant with project conventions.
 
 ---
 

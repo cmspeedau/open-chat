@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **runtime memory bug diagnostic self-healing**, **subagent deadlocks prevention**, and a **Context Compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **runtime memory bug diagnostic self-healing**, **subagent deadlock prevention**, **system lockup prevention & multi-agent resource governors**, and a **Context Compositor engine**.
 
 ---
 
@@ -15,20 +15,71 @@ Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://gi
 
 ## 🛠️ OpenChamber Shortfalls & The `open-chat` Architectural Fixes
 
-Through real-world development and issue analysis in OpenChamber, ten critical bottlenecks emerge. `open-chat` is architected from the ground up to eliminate every single one:
+Through real-world development and multi-agent issue analysis in OpenChamber, eleven critical bottlenecks emerge. `open-chat` is architected from the ground up to eliminate every single one:
 
 | # | OpenChamber Shortfall | What Goes Wrong | The `open-chat` Fix |
 |---|---|---|---|
-| **1** | **5× Output Token Bloat** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Unified Diff Tooling & Strict `[during]` Guardrails:** Only changed lines are emitted; zero conversational fluff or tutorial narration. |
-| **2** | **Runtime Memory Bugs (Leaks, SIGKILL & Unbounded Buffers)** | Unbounded agent log buffers, unpruned tool execution history, and lack of system memory awareness trigger runtime OOM panics or process freezes. | **Self-Monitoring Memory Guardrails & Diagnostic Self-Healing:** Hard caps on execution trace buffers, active memory telemetry, and auto-compaction before memory pressure triggers crash events. |
-| **3** | **Context Window Opacity** | No visibility into prompt assembly; bloated MCP tool schemas and unpruned history quietly push models past 80k tokens into the "lost-in-the-middle" zone. | **Context Compositor & Token Badges:** Turn-by-turn inspector showing exact token counts for skills, tools, and history with deterministic budgeting. |
+| **1** | **Multi-Agent Host Lockups (PC Freezes)** | Spawning 3+ concurrent agents creates unconstrained child processes, unbounded thread pools, multiple file watchers, and competing compiler checks that saturate 100% CPU/RAM and freeze the OS. | **Multi-Agent Resource Governor & Nice/Cgroup Limits:** Hard concurrency semaphores, single shared workspace file-watcher, queue-managed build/compiler checks, and OS process priority throttling. |
+| **2** | **5× Output Token Bloat** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Unified Diff Tooling & Strict `[during]` Guardrails:** Only changed lines are emitted; zero conversational fluff or tutorial narration. |
+| **3** | **Runtime Memory Bugs (Leaks, SIGKILL & Unbounded Buffers)** | Unbounded agent log buffers, unpruned tool execution history, and lack of system memory awareness trigger runtime OOM panics or process freezes. | **Self-Monitoring Memory Guardrails & Diagnostic Self-Healing:** Hard caps on execution trace buffers, active memory telemetry, and auto-compaction before memory pressure triggers crash events. |
 | **4** | **Subagent Hangs & Deadlocks (Async Desync)** | Orchestrator-subagent runs hang indefinitely after 20–40 tool calls because parent sessions lose track of child SSE events or drop wake-ups. | **Strict Tokio Channel Ack & Timeout Deadlock Detector:** Typed async mpsc channels with heartbeat ping/pong, background task detached supervisors, and fail-safe timeouts. |
 | **5** | **DOM Overload & Multi-Second Input Lag** | Long, tool-rich chats mount 1,000+ DOM nodes unconditionally outside the virtualizer (e.g. streaming tail turns), ballooning renderer RAM to >1.2GB and freezing typing. | **Aggressive Virtualization & Compact Headless JSON Feeds:** True virtualized viewport rendering; turns older than the immediate step render only collapsed summary envelopes. |
-| **6** | **Transient Stream Resets Freeze Chat** | LLM provider timeouts or TCP socket resets leave the UI in a perpetual "spinning/stalled" state with ambiguous retry states. | **Resilient SSE Reconnection with Idempotency Keys:** Automatic reconnect exponential backoff with turn replay buffers so network blips never leave orphaned states. |
-| **7** | **Electron Client Lock-in & Tab Fragility** | Engine tied directly to the frontend/browser session; tab closes or background memory kills crash ongoing runs. | **Headless Background Daemon:** Detached background daemon process accessible via Telegram, Discord, CLI, or lightweight Web UI. |
-| **8** | **Cross-Session Amnesia** | Static `AGENTS.md` only; no persistent memory across chats, causing repeated questions and duplicate instructions. | **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse) + `sqlite-vec` (dense) retaining workspace decisions and user habits permanently. |
-| **9** | **All-or-Nothing Rule Ingestion** | Rules for all languages/tools injected simultaneously, confusing model attention and diluting focus. | **Autonomous Stack Auto-Binding:** Only loads matching skills for active files (e.g. Rust skills only when touching `.rs` files). |
-| **10** | **Unverified Silent Edits** | Generates file diffs without executing project linters or compilers, leaving broken syntax for manual debugging. | **Autonomous Self-Healing Loop:** Automatically executes `cargo check` / `tsc` / `pytest` in background before closing the turn. |
+| **6** | **Context Window Opacity** | No visibility into prompt assembly; bloated MCP tool schemas and unpruned history quietly push models past 80k tokens into the "lost-in-the-middle" zone. | **Context Compositor & Token Badges:** Turn-by-turn inspector showing exact token counts for skills, tools, and history with deterministic budgeting. |
+| **7** | **Transient Stream Resets Freeze Chat** | LLM provider timeouts or TCP socket resets leave the UI in a perpetual "spinning/stalled" state with ambiguous retry states. | **Resilient SSE Reconnection with Idempotency Keys:** Automatic reconnect exponential backoff with turn replay buffers so network blips never leave orphaned states. |
+| **8** | **Electron Client Lock-in & Tab Fragility** | Engine tied directly to the frontend/browser session; tab closes or background memory kills crash ongoing runs. | **Headless Background Daemon:** Detached background daemon process accessible via Telegram, Discord, CLI, or lightweight Web UI. |
+| **9** | **Cross-Session Amnesia** | Static `AGENTS.md` only; no persistent memory across chats, causing repeated questions and duplicate instructions. | **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse) + `sqlite-vec` (dense) retaining workspace decisions and user habits permanently. |
+| **10** | **All-or-Nothing Rule Ingestion** | Rules for all languages/tools injected simultaneously, confusing model attention and diluting focus. | **Autonomous Stack Auto-Binding:** Only loads matching skills for active files (e.g. Rust skills only when touching `.rs` files). |
+| **11** | **Unverified Silent Edits** | Generates file diffs without executing project linters or compilers, leaving broken syntax for manual debugging. | **Autonomous Self-Healing Loop:** Automatically executes `cargo check` / `tsc` / `pytest` in background before closing the turn. |
+
+---
+
+## 🛑 Why 3 Concurrent Agents Lock Up a PC (and How `open-chat` Solves It)
+
+When running multiple agents concurrently (e.g., 3 agents simultaneously running in OpenChamber), host computers freeze, fans ramp up to 100%, and mouse cursors stutter. This happens due to **four compounding system bottlenecks**:
+
+```
+[Agent 1: Code Gen]     [Agent 2: Test Runner]     [Agent 3: Linter/Indexer]
+         │                         │                         │
+         ├─────────────────────────┼─────────────────────────┤
+         ▼                         ▼                         ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                   UNGOVERNED SYSTEM CONTENTION                         │
+│  ❌ 3x Heavy Language Servers / File Watchers (Chokidar / Notify)       │
+│  ❌ 3x Parallel Compiler Invocations (cargo check / tsc / bundlers)     │
+│  ❌ 3x Unbounded Node.js / V8 Runtimes competing for memory & garbage  │
+│  ❌ Disk I/O Saturation (locks on target/, node_modules/, SQLite WAL)   │
+└────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+                 [🔥 100% CPU / RAM Saturation ➔ PC LOCKUP]
+```
+
+### The `open-chat` Multi-Agent Resource Governor
+
+`open-chat` introduces an explicit host resource arbiter built into its Rust daemon:
+
+```
+[Agent 1]               [Agent 2]               [Agent 3]
+    │                       │                       │
+    ▼                       ▼                       ▼
+┌───────────────────────────────────────────────────────────────┐
+│              open-chat Host Resource Arbiter                  │
+│                                                               │
+│  1. Concurrency Semaphore: Max parallel heavy tasks (N-1 CPUs) │
+│  2. Build/Lint Queue: Serialized `cargo check` / `tsc` runs    │
+│  3. Shared Workspace Watcher: 1 single file debouncer for all │
+│  4. Process Priority: Subprocess `nice` (Unix) / BelowNormal  │
+│  5. Memory Headroom Guard: Auto-throttles if free RAM < 15%   │
+└───────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+         [🟢 Smooth, Responsive System • Zero OS Freezes]
+```
+
+1. **Shared Workspace Event Bus (Single Watcher):** Instead of each agent spinning up its own recursive file watcher, `open-chat` runs **one single debounced watcher** across the workspace and broadcasts diff events over an internal broadcast channel.
+2. **Compiler & Linter Execution Mutex / Queue:** Agents are prevented from firing simultaneous builds. If Agent 1 is running `cargo check`, Agent 2 queues its check until Agent 1 finishes, eliminating duplicate compilation cache contention and disk thrashing.
+3. **OS Process Niceness & CPU Affinity:** Tool-spawned subcommands (compilers, test runners, grep) are executed with reduced scheduling priority (`nice` on Linux/macOS, `BELOW_NORMAL_PRIORITY_CLASS` on Windows) so the desktop UI, mouse, and browser remain completely responsive.
+4. **Active System Memory Throttle:** When available system RAM falls below a safety threshold (default: 15%), the arbiter suspends launching new subagent tool executions until memory clears.
 
 ---
 
@@ -218,14 +269,15 @@ You will never have to wonder if a skill is active. Every turn includes transpar
   ],
   "total_skill_overhead": "730 tokens",
   "output_mode": "surgical_diff",
-  "memory_health": "optimal"
+  "memory_health": "optimal",
+  "host_governor": { "active_workers": 3, "cpu_throttle": "normal" }
 }
 ```
 
 - **Web UI:** A sticky header bar with interactive pills:
-  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens) • ✂️ Diff-Mode • 🟢 Memory Clean`
+  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens) • ✂️ Diff-Mode • 🟢 Memory Clean • ⚡ System Unburdened`
 - **Telegram & Discord:** Clean, compact header tag before replies:
-  `⚡ [Loaded: rust-idioms, anti-slop (during) | Memory: Clean]`
+  `⚡ [Loaded: rust-idioms, anti-slop (during) | Memory: Clean | Governor: OK]`
 
 ---
 
@@ -272,6 +324,7 @@ The `open-chat` implementation is structured into phased milestones addressing a
 
 ### Phase 1: Core Engine, Memory & Concurrency Foundation
 - [ ] **Rust Daemon Scaffolding:** Headless async Tokio core daemon decoupled from any browser or Electron process.
+- [ ] **Multi-Agent Host Resource Arbiter:** Concurrency semaphores, task `nice` priority, serialized build queue, and memory safety headroom guards to eliminate PC lockups.
 - [ ] **Bounded Memory Ring Buffers:** Zero-copy execution streams with strict circular buffer caps (256KB) preventing process RAM leaks and OOM kills.
 - [ ] **Subagent Task Supervisor & Watchdog:** Async channel orchestration with timeout safety nets and automatic wake-up triggers to eliminate subagent hangs.
 - [ ] **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse exact) + `sqlite-vec` (dense semantic) with automatic contradiction resolution and WAL hygiene.
@@ -290,7 +343,7 @@ The `open-chat` implementation is structured into phased milestones addressing a
 
 ### Phase 4: Context Compositor & Observability
 - [ ] **Context Compositor Pipeline:** Pre-flight prompt assembler that deduplicates rules, enforces strict per-turn token budgets, and eliminates conflicting advice.
-- [ ] **Real-Time Token & Memory Badges:** Transparent per-turn telemetry showing active skills, token consumption, and memory health status (`Memory: Optimal`).
+- [ ] **Real-Time Token, Memory & Governor Badges:** Transparent per-turn telemetry showing active skills, token consumption, memory health status, and host load.
 
 ### Phase 5: Multi-Interface Adapters & Resilient UI
 - [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.

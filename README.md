@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, and a **Context Compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **runtime memory bug diagnostic self-healing**, and a **Context Compositor engine**.
 
 ---
 
@@ -15,16 +15,17 @@ Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://gi
 
 ## 🛠️ OpenChamber Shortfalls & The `open-chat` Architectural Fixes
 
-Through real-world development in OpenChamber, six major bottlenecks emerge. `open-chat` is architected from the ground up to eliminate each one:
+Through real-world development in OpenChamber, seven major bottlenecks emerge. `open-chat` is architected from the ground up to eliminate each one:
 
 | # | OpenChamber Shortfall | What Goes Wrong | The `open-chat` Fix |
 |---|---|---|---|
 | **1** | **5× Output Token Bloat** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Unified Diff Tooling & Strict `[during]` Guardrails:** Only changed lines are emitted; zero conversational fluff or tutorial narration. |
-| **2** | **Context Window Opacity** | No visibility into prompt assembly; bloated MCP tool schemas and unpruned history quietly push models past 80k tokens into the "lost-in-the-middle" zone. | **Context Compositor & Token Badges:** Turn-by-turn inspector showing exact token counts for skills, tools, and history with deterministic budgeting. |
-| **3** | **Electron Client Lock-in** | Engine tied directly to the frontend/browser session; tab closes or background memory kills crash ongoing runs. | **Headless Background Daemon:** Detached background daemon process accessible via Telegram, Discord, CLI, or lightweight Web UI. |
-| **4** | **Cross-Session Amnesia** | Static `AGENTS.md` only; no persistent memory across chats, causing repeated questions and duplicate instructions. | **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse) + `sqlite-vec` (dense) retaining workspace decisions and user habits permanently. |
-| **5** | **All-or-Nothing Rule Ingestion** | Rules for all languages/tools injected simultaneously, confusing model attention and diluting focus. | **Autonomous Stack Auto-Binding:** Only loads matching skills for active files (e.g. Rust skills only when touching `.rs` files). |
-| **6** | **Unverified Silent Edits** | Generates file diffs without executing project linters or compilers, leaving broken syntax for manual debugging. | **Autonomous Self-Healing Loop:** Automatically executes `cargo check` / `tsc` / `pytest` in background before closing the turn. |
+| **2** | **Runtime Memory Bugs (Leaks, SIGKILL & Unbounded Buffers)** | Unbounded agent log buffers, unpruned tool execution history, and lack of system memory awareness trigger runtime OOM panics or process freezes. | **Self-Monitoring Memory Guardrails & Diagnostic Self-Healing:** Hard caps on execution trace buffers, active memory telemetry, and auto-compaction before memory pressure triggers crash events. |
+| **3** | **Context Window Opacity** | No visibility into prompt assembly; bloated MCP tool schemas and unpruned history quietly push models past 80k tokens into the "lost-in-the-middle" zone. | **Context Compositor & Token Badges:** Turn-by-turn inspector showing exact token counts for skills, tools, and history with deterministic budgeting. |
+| **4** | **Electron Client Lock-in** | Engine tied directly to the frontend/browser session; tab closes or background memory kills crash ongoing runs. | **Headless Background Daemon:** Detached background daemon process accessible via Telegram, Discord, CLI, or lightweight Web UI. |
+| **5** | **Cross-Session Amnesia** | Static `AGENTS.md` only; no persistent memory across chats, causing repeated questions and duplicate instructions. | **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse) + `sqlite-vec` (dense) retaining workspace decisions and user habits permanently. |
+| **6** | **All-or-Nothing Rule Ingestion** | Rules for all languages/tools injected simultaneously, confusing model attention and diluting focus. | **Autonomous Stack Auto-Binding:** Only loads matching skills for active files (e.g. Rust skills only when touching `.rs` files). |
+| **7** | **Unverified Silent Edits** | Generates file diffs without executing project linters or compilers, leaving broken syntax for manual debugging. | **Autonomous Self-Healing Loop:** Automatically executes `cargo check` / `tsc` / `pytest` in background before closing the turn. |
 
 ---
 
@@ -72,6 +73,28 @@ In standard agent setups, output tokens run **5× higher than input tokens** bec
 - **Output tokens drop by 75–85%**, cutting API costs significantly.
 - **Turn latency drops from 60s+ to under 5s.**
 - The next turn's input window stays compact, avoiding compounding context bloat.
+
+---
+
+## 🛡️ Runtime Memory Issues: Detection, Telemetry & Self-Healing
+
+When an agent encounters memory issues during execution, it generally falls into two distinct categories:
+
+### 1. Agent Process Memory Leaks & OOM Crashes
+- **The Problem:** In Node/Electron-based systems like OpenChamber, tool execution buffers, multi-megabyte terminal outputs, and ungarbage-collected MCP client streams accumulate in RAM until the OS issues a `SIGKILL (OOM)` or the process freezes.
+- **The `open-chat` Fix:**
+  - **Rust Native Daemon with Zero-Copy Streams:** Replaces bulky V8/JS heaps with lightweight native Rust memory management.
+  - **Ring-Buffered Execution Logs:** Command and tool outputs are capped in bounded circular buffers (e.g. max 256KB retained in RAM per process run).
+  - **Memory Pressure Telemetry:** If host RAM usage spikes >85%, the engine triggers an automatic WAL flush, runs SQLite memory vacuuming, and sheds non-essential vector caches.
+
+### 2. Target Workspace Code Memory Bugs (Leak Detection & Prevention)
+- **The Problem:** The agent writes or discovers code that introduces memory leaks (e.g., circular `Arc`/`Rc` references in Rust, unclosed file descriptors, dangling event listeners, unbounded in-memory caches, or C/FFI pointer mismanagement).
+- **The `open-chat` Fix:**
+  - **Auto-Bound Memory Safety Skills (`during` mode):** When working in Rust, C++, Go, or Python, the system auto-injects targeted memory-safety rules (e.g., preventing unbounded `Vec::push` without capacity bounds, checking `Weak` references, and mandating RAII cleanup).
+  - **Autonomous Diagnostic Hook:** When a build, test, or runtime command emits a memory warning (e.g. `AddressSanitizer: heap-use-after-free`, `valgrind` errors, Python `MemoryError`, or high heap allocation logs), the agent:
+    1. Pauses task execution.
+    2. Identifies the offending data structure or lifecycle flaw.
+    3. Emits an immediate surgical fix and validates it against memory profiling flags.
 
 ---
 
@@ -191,14 +214,15 @@ You will never have to wonder if a skill is active. Every turn includes transpar
     { "id": "anti-slop", "subskills": ["antislop-code"], "mode": "during", "tokens": 310 }
   ],
   "total_skill_overhead": "730 tokens",
-  "output_mode": "surgical_diff"
+  "output_mode": "surgical_diff",
+  "memory_health": "optimal"
 }
 ```
 
 - **Web UI:** A sticky header bar with interactive pills:
-  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens) • ✂️ Diff-Mode`
+  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens) • ✂️ Diff-Mode • 🟢 Memory Clean`
 - **Telegram & Discord:** Clean, compact header tag before replies:
-  `⚡ [Loaded: rust-idioms, anti-slop (during)]`
+  `⚡ [Loaded: rust-idioms, anti-slop (during) | Memory: Clean]`
 
 ---
 
@@ -241,9 +265,10 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 
 ## 🗺️ Roadmap & Next Steps
 
-- [ ] Core daemon scaffolding (Rust).
+- [ ] Core daemon scaffolding (Rust native with bounded ring buffers).
 - [ ] SQLite + FTS5 + `sqlite-vec` memory persistence layer.
 - [ ] Surgical diff / replace tool suite (replacing full file overwrites).
+- [ ] Memory health telemetry and runtime diagnostic hook (leak prevention).
 - [ ] Language & workspace stack fingerprinting scanner.
 - [ ] 50+ Skill metadata indexer with auto-binding triggers.
 - [ ] Skill Gap Detector & interactive prompt flow (`skill_bootstrap`).

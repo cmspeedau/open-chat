@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, and a **Context Compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, and a **Context Compositor engine**.
 
 ---
 
@@ -70,16 +70,17 @@ When managing a library of **55+ skills**, manually calling them or dumping them
         │  Matches: languages, file globs, dependencies, modes   │
         └────────────────────────────────────────────────────────┘
                                      │
-                      Language/Context Matched
-                                     │
-                                     ▼
-        ┌────────────────────────────────────────────────────────┐
-        │  Persistent Auto-Mount in Project Memory               │
-        │  • E.g. Rust detected ➔ mounts 'rust-patterns',        │
-        │    'anti-slop [during]', 'cargo-analyzer'              │
-        │  • Keeps other 52 skills dormant in the index          │
-        │  • Emits visual badge & logs exact token budget        │
-        └────────────────────────────────────────────────────────┘
+              ┌──────────────────────┴──────────────────────┐
+              │                                             │
+      [Skill Matched]                                 [No Skill Found]
+              │                                             │
+              ▼                                             ▼
+┌───────────────────────────────┐             ┌───────────────────────────────┐
+│ Persistent Auto-Mount         │             │ Skill Gap Detector            │
+│ • Mounts idiomatic skills     │             │ • Prompts user to add/author  │
+│ • Injects 'anti-slop [during]'│             │   new skill for this language │
+│ • Emits visual badge          │             │ • Can bootstrap SKILL.md      │
+└───────────────────────────────┘             └───────────────────────────────┘
 ```
 
 ### 1. Zero-Friction Skill Manifest (`SKILL.md` frontmatter)
@@ -108,11 +109,21 @@ modes:
 2. **FTS5 / Semantic Skill Router:**
    - For skills without exact file bindings, an internal index routes tasks via similarity (e.g., "optimize SQL query" fetches `postgres-tuning` even in a Rust repo).
 
-### 3. Dynamic Runtime Language Expansion
-When a new file type or language is created:
-1. Agent generates or touches `src/lib.rs` or runs `cargo init`.
-2. Workspace watcher flags `new_language_detected: rust`.
-3. The daemon scans all 55+ skills, identifies all matching skills (`rust-patterns`, `clippy-enforcer`, `anti-slop`), and activates them immediately without interrupting the flow.
+### 3. Dynamic Runtime Language Expansion & "Skill Gap" Detection
+What happens when you begin working in a language or framework that **has zero matching skills in your 55-skill catalog** (e.g., introducing Zig, Mojo, or Gleam)?
+
+Instead of silently falling back to unguided, generic LLM generation, `open-chat` triggers an interactive **Skill Gap Prompt**:
+
+1. **Detection:** Workspace watcher detects `.zig` files or `build.zig`, queries the 55-skill catalog, and reports zero matches for language `zig`.
+2. **Interactive Notification & Action Request:**
+   - **Web UI:** Displays an actionable pill banner:  
+     `⚠️ No skill found for Zig. [Generate Zig Skill] [Import from Repo] [Skip]`
+   - **Telegram / Discord:** Posts an inline query with action buttons:
+     > 💡 *Detected new language **Zig** (`build.zig`), but no skill matches in your 55 installed skills. Would you like me to create a `zig-patterns` skill or import one?*  
+     > `[⚡ Auto-Generate Skill] [📂 Browse Community] [🚫 Skip]`
+3. **Agent Self-Bootstrapping (`skill_bootstrap`):**
+   - If accepted, the agent scans official best practices, language idioms, and current project files to generate a tailored `.openchat/skills/zig-patterns/SKILL.md`.
+   - The newly minted skill is immediately indexed, bound in `during` mode, and persisted to `.openchat/memory.sqlite`.
 
 ### 4. Observable Execution Badges (Eliminating the "Silent Injection" Problem)
 You will never have to wonder if a skill is active. Every turn includes transparent visual confirmation:
@@ -179,6 +190,7 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 - [ ] SQLite + FTS5 + `sqlite-vec` memory persistence layer.
 - [ ] Language & workspace stack fingerprinting scanner.
 - [ ] 50+ Skill metadata indexer with auto-binding triggers.
+- [ ] Skill Gap Detector & interactive prompt flow (`skill_bootstrap`).
 - [ ] Context Compositor (token pruner & conflict deduplicator).
 - [ ] Observable event stream & multi-client UI status badges.
 - [ ] Telegram bot adapter & Web UI frontend.

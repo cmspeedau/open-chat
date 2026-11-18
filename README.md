@@ -263,16 +263,32 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 
 ---
 
-## 🗺️ Roadmap & Next Steps
+## 🗺️ Roadmap & Milestones
 
-- [ ] Core daemon scaffolding (Rust native with bounded ring buffers).
-- [ ] SQLite + FTS5 + `sqlite-vec` memory persistence layer.
-- [ ] Surgical diff / replace tool suite (replacing full file overwrites).
-- [ ] Memory health telemetry and runtime diagnostic hook (leak prevention).
-- [ ] Language & workspace stack fingerprinting scanner.
-- [ ] 50+ Skill metadata indexer with auto-binding triggers.
-- [ ] Skill Gap Detector & interactive prompt flow (`skill_bootstrap`).
-- [ ] Context Compositor (token pruner, output compressor, conflict deduplicator).
-- [ ] Autonomous lint/verify feedback loop (`cargo check`, `tsc`).
-- [ ] Observable event stream & multi-client UI status badges.
-- [ ] Telegram bot adapter & Web UI frontend.
+The `open-chat` implementation is structured into phased milestones addressing all core architecture layers and OpenChamber fixes:
+
+### Phase 1: Core Engine & Memory Foundation
+- [ ] **Rust Daemon Scaffolding:** Headless async Tokio core daemon decoupled from any browser or Electron process.
+- [ ] **Bounded Memory Ring Buffers:** Zero-copy execution streams with strict circular buffer caps (256KB) preventing process RAM leaks and OOM kills.
+- [ ] **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse exact) + `sqlite-vec` (dense semantic) with automatic contradiction resolution and WAL hygiene.
+- [ ] **Dynamic Rolling Context Compactor:** Automated pruning of intermediate terminal logs and tool payloads into semantic one-line digests.
+
+### Phase 2: Token Efficiency & Code Generation
+- [ ] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool eliminating full-file rewrites and cutting output tokens by ~80%.
+- [ ] **Strict Anti-Slop `[during]` Mode Enforcement:** Automatic negative constraint injection to eliminate polite filler, pre-tool monologue, and post-code summaries.
+- [ ] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
+- [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.
+
+### Phase 3: 50+ Skill Scale & Stack Discovery
+- [ ] **Deterministic Stack Fingerprinter:** Real-time workspace scanner detecting active languages (`Cargo.toml`, `package.json`, `go.mod`, etc.).
+- [ ] **55+ Skill Index Registry:** YAML frontmatter parser and indexing engine mapping skills to languages, globs, dependencies, and execution modes.
+- [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks with one-click `skill_bootstrap` authoring.
+
+### Phase 4: Context Compositor & Observability
+- [ ] **Context Compositor Pipeline:** Pre-flight prompt assembler that deduplicates rules, enforces strict per-turn token budgets, and eliminates conflicting advice.
+- [ ] **Real-Time Token & Memory Badges:** Transparent per-turn telemetry showing active skills, token consumption, and memory health status (`Memory: Optimal`).
+
+### Phase 5: Multi-Interface Adapters
+- [ ] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, and execution status.
+- [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.
+- [ ] **Lightweight Web UI Client:** Desktop browser dashboard with sticky skill badges, diff visualizer, and token meter.

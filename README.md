@@ -2,14 +2,14 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory** and **observable, context-aware skill execution**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory** and **observable, generalized skill lifecycle bindings**.
 
 ---
 
 ## 🔗 Reference Projects & Ecosystem
 
 - **Base Reference:** [openchamber/openchamber](https://github.com/openchamber/openchamber) — Headless core architecture decoupling the engine from mobile/Electron wrappers.
-- **Skill Reference:** [miqdadbadjuber/anti-slop](https://github.com/miqdadbadjuber/anti-slop) — Specialized ruleset eliminating generic AI-generated UI designs, copy, and code patterns across development lifecycle stages.
+- **Skill Reference:** [miqdadbadjuber/anti-slop](https://github.com/miqdadbadjuber/anti-slop) — Exemplar ruleset illustrating stage-based operational modes (`during` vs `after`) across design, copy, and code generation.
 
 ---
 
@@ -40,57 +40,89 @@ A key limitation in standard agent wrappers is memory amnesia across sessions an
 
 ---
 
-## ⚡ Architectural Pillar 2: Observable Skills System & Workflow Trigger Modes
+## ⚡ Architectural Pillar 2: Universal Skill Lifecycle & Intent Binding Engine
 
-In traditional setups, skill injection is often silent and opaque—skills are stuffed into system prompts without confirmation, leaving the user guessing whether rules were loaded.
+Rather than hardcoding rules for one specific repository, `open-chat` provides a **universal skill specification schema**. Any skill or skill pack using declarative phase triggers (e.g., `during`, `after`, `review`, `audit`, `plan`) is automatically understood, persisted, and loaded on-demand.
 
-`open-chat` makes skills **explicit, observable, inspectable, and persistent per project**:
+### 1. Universal Skill Schema (`SKILL.md` frontmatter)
+Any skill package conforming to the open schema defines its lifecycle triggers and sub-skill bindings:
 
-### 1. Project Memory & Workflow Mode Persistence (e.g., "During" vs "After")
-Skills like `anti-slop` define specific operating modes:
-- **`During` Mode:** Real-time generation guardrails (prevents AI-slop UI components, filler copy, and boilerplate comments while writing code).
-- **`After` Mode:** Audit and remediation pass over existing codebases.
+```yaml
+---
+name: anti-slop # or tdd-workflow, security-guard, clean-architecture, etc.
+description: Eliminates generic patterns and enforces strict craftsmanship standards.
+modes:
+  during:
+    description: Real-time generation guardrails applied while producing code, copy, or UI.
+    autoload: true
+    subskills:
+      - id: antislop-ui
+        triggers: [".tsx", ".jsx", ".vue", ".svelte", ".html", ".css", "component", "styling"]
+      - id: antislop-code
+        triggers: [".rs", ".ts", ".go", ".py", "refactor", "function", "logic"]
+      - id: antislop-copywriting
+        triggers: [".md", "copy", "marketing", "content", "documentation"]
+  after:
+    description: Post-generation audit and remediation pass.
+    autoload: false
+    entrypoint: antislop-audit
+---
+```
 
-When the user says:
-> *"During"* or *"Use anti-slop during this project"*
+### 2. Conversational Intent Binding & Persistence
+When a user says:
+> *"during"*  
+> *"use anti-slop during this project"*  
+> *"run tdd-workflow during"*  
 
-1. **State Persistence:** The daemon stores the mode directly into Project Workspace Memory (`.openchat/memory.sqlite`):
+1. **Intent Parser & Phase Resolver:**
+   - The daemon detects lifecycle keyword cues (`during`, `after`, `plan`, `audit`).
+   - If an active skill pack is referenced (or default workspace rule applies), it binds that mode.
+2. **Project Workspace Storage (`.openchat/memory.sqlite`):**
+   The binding is committed to the local workspace database:
    ```json
    {
-     "project": "my-app",
-     "active_skills": {
-       "antislop": {
+     "project_id": "my-app",
+     "active_skill_bindings": {
+       "anti-slop": {
          "mode": "during",
-         "autoload": true,
-         "subskills": ["antislop-ui", "antislop-code", "antislop-copywriting"]
+         "bound_at": "2026-11-19T09:40:00Z",
+         "autoload": true
        }
      }
    }
    ```
-2. **Silent Zero-Prompt Autoloading:** For subsequent prompts in this workspace, the agent loads the relevant skills automatically without the user needing to repeat instructions or append `/skill-name` tokens.
-3. **Task-Specific Dynamic Loading:**
-   - Writing UI components (`.tsx`, `.vue`, `.html`) $\rightarrow$ auto-binds `antislop-ui` and `antislop-layoutmobile`.
-   - Writing docs or copy $\rightarrow$ auto-binds `antislop-copywriting`.
-   - Editing logic/code $\rightarrow$ auto-binds `antislop-code` comment hygiene.
+3. **Zero-Prompt Session Restoration:**
+   - Across restarts, new chat sessions, or context clears in this workspace, the daemon reads the binding.
+   - The user never has to re-prompt *"remember to use X"* or append manual skill flags.
+4. **Contextual Dispatch on Demand:**
+   - The daemon monitors active context (e.g., file paths being modified, user prompt intent).
+   - If editing `Navbar.tsx`, it dynamically binds the `antislop-ui` sub-skill.
+   - If modifying backend endpoints, it activates `antislop-code`.
 
-### 2. Skill Activation Events & Visible Feedback
-- The daemon emits an explicit `agent:skill_activated` lifecycle event across WebSocket/SSE whenever a skill binds to context:
-  ```json
-  {
-    "type": "agent:skill_activated",
-    "skill": "antislop",
-    "mode": "during",
-    "subskills": ["antislop-ui", "antislop-code"],
-    "source": ".agents/skills/antislop/SKILL.md",
-    "reason": "Project memory: active mode is 'during'"
-  }
-  ```
-- **Visual Feedback:** 
-  - **Web UI:** Collapsible status badges showing active skills and their token footprints (`🛡️ antislop [during] active: antislop-ui, antislop-code`).
-  - **Telegram & Discord:** Small preambles/tags (e.g., `⚡ [Active: antislop (during)]`).
+### 3. Observable Lifecycle Events & Visual Badges
+Skills are never silently injected. The engine emits an explicit WebSocket/SSE event:
 
-### 3. On-Demand Skill Tool Calls (`load_skill`)
-- Agents can also explicitly invoke `load_skill(skill_name)` dynamically, producing a visible tool call event in chat history.
+```json
+{
+  "type": "agent:skill_activated",
+  "skill": "anti-slop",
+  "mode": "during",
+  "active_subskills": ["antislop-ui"],
+  "source": ".openchat/skills/anti-slop/SKILL.md",
+  "trigger": "User prompt modifying frontend component (Navbar.tsx)"
+}
+```
+
+- **Web UI:** Live status pill: `🛡️ anti-slop [during] • UI active`
+- **Telegram & Discord:** Visual indicator preamble: `⚡ [Active Mode: anti-slop (during)]`
+
+### 4. Dynamic Agent Tool: `load_skill`
+Agents can dynamically inspect the workspace skill catalog and invoke:
+```json
+load_skill({ "skill": "anti-slop", "subskill": "antislop-code", "mode": "during" })
+```
+This leaves an explicit tool execution trace in the chat stream so the user always sees what rules are loaded.
 
 ---
 
@@ -107,7 +139,8 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 
 - [ ] Core daemon scaffolding (Rust / TypeScript).
 - [ ] SQLite + FTS5 + `sqlite-vec` memory persistence layer.
-- [ ] Project-level skill trigger store (handling persistent modes like `during` and `after`).
+- [ ] Universal Skill Lifecycle & Mode Engine (`during` / `after` / `plan`).
+- [ ] Auto-binding listener based on file extensions and intent triggers.
 - [ ] Event-driven skill loader & `load_skill` tool definition.
 - [ ] Telegram bot adapter integration.
 - [ ] Web UI frontend client.

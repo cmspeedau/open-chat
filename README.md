@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory** and **observable, generalized skill lifecycle bindings**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory** and an **autonomous skill discovery & context compositor engine**.
 
 ---
 
@@ -26,7 +26,7 @@ A key limitation in standard agent wrappers is memory amnesia across sessions an
 1. **Global User Memory (`~/.openchat/memory.sqlite`):**
    - Personal preferences (formatting, tone, keybindings, style guidelines).
 2. **Project Workspace Memory (`.openchat/memory.sqlite`):**
-   - Tech stack details, architectural constraints, test commands, active project skills & triggers.
+   - Tech stack details, project languages, architectural constraints, test commands, active project skills & triggers.
 3. **Session Working Memory (RAM/WAL):**
    - Active scratchpad, task checkpoints, intermediate debugging traces.
 
@@ -40,93 +40,117 @@ A key limitation in standard agent wrappers is memory amnesia across sessions an
 
 ---
 
-## ⚡ Architectural Pillar 2: Universal Skill Lifecycle & Intent Binding Engine
+## ⚡ Architectural Pillar 2: 50+ Skill Scale — Autonomous Language & Stack Auto-Binding
 
-Rather than hardcoding rules for one specific repository, `open-chat` provides a **universal skill specification schema**. Any skill or skill pack using declarative phase triggers (e.g., `during`, `after`, `review`, `audit`, `plan`) is automatically understood, persisted, and loaded on-demand.
+When scaling to **50+ skills**, dumping all skills into the prompt causes context exhaustion, degraded attention, and uncertainty over whether the agent even used them. 
 
-### 1. Universal Skill Schema (`SKILL.md` frontmatter)
-Any skill package conforming to the open schema defines its lifecycle triggers and sub-skill bindings:
+`open-chat` replaces manual prompting with an **Autonomous Skill Discovery & Binding Engine**:
+
+```
+                       User starts / opens workspace
+                                     │
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │  Project Language & Stack Detector                     │
+        │  • Detects files: Cargo.toml, package.json, go.mod, …   │
+        │  • Detects languages: Rust, TypeScript, Python, etc.   │
+        └────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │  Skill Indexing & Metadata Registry                    │
+        │  (Fast indexing of all 55+ installed skills)           │
+        │  Matches: languages, file globs, dependencies, modes   │
+        └────────────────────────────────────────────────────────┘
+                                     │
+                      Language/Context Matched
+                                     │
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │  Persistent Auto-Mount in Project Memory               │
+        │  • E.g. Rust detected ➔ mounts 'rust-patterns',        │
+        │    'anti-slop [during]', 'cargo-analyzer'              │
+        │  • Emits visual badge & logs exact token budget        │
+        └────────────────────────────────────────────────────────┘
+```
+
+### 1. Zero-Friction Skill Manifest (`SKILL.md` frontmatter)
+Every skill in `.openchat/skills/` (or global `~/.openchat/skills/`) declares what it targets:
 
 ```yaml
 ---
-name: anti-slop # or tdd-workflow, security-guard, clean-architecture, etc.
-description: Eliminates generic patterns and enforces strict craftsmanship standards.
+id: rust-idioms-and-concurrency
+name: Rust Idiomatic Patterns & Memory Safety
+tags: [rust, cargo, safety, async]
+triggers:
+  languages: ["rust"]
+  manifest_files: ["Cargo.toml", "Cargo.lock"]
+  file_patterns: ["*.rs"]
 modes:
   during:
-    description: Real-time generation guardrails applied while producing code, copy, or UI.
     autoload: true
-    subskills:
-      - id: antislop-ui
-        triggers: [".tsx", ".jsx", ".vue", ".svelte", ".html", ".css", "component", "styling"]
-      - id: antislop-code
-        triggers: [".rs", ".ts", ".go", ".py", "refactor", "function", "logic"]
-      - id: antislop-copywriting
-        triggers: [".md", "copy", "marketing", "content", "documentation"]
-  after:
-    description: Post-generation audit and remediation pass.
-    autoload: false
-    entrypoint: antislop-audit
+    description: Enforces error handling with Result/Option, eliminates unneeded clones, verifies Send/Sync.
 ---
 ```
 
-### 2. Conversational Intent Binding & Persistence
-When a user says:
-> *"during"*  
-> *"use anti-slop during this project"*  
-> *"run tdd-workflow during"*  
+### 2. Multi-Tier Resolution: Stack Detection + Semantic Fallback
+1. **Deterministic Project Fingerprinting:**
+   - Detects `Cargo.toml` or `main.rs` $\rightarrow$ automatically loads all Rust-tagged skills in `during` mode.
+   - If a new language is introduced to the project (e.g. adding a Python CLI or TypeScript frontend to a Rust backend), the detector fires a `workspace:stack_expanded` event and immediately binds matching skills.
+2. **FTS5 / Semantic Skill Router:**
+   - For skills without exact file bindings, an internal index routes tasks via similarity (e.g., "optimize SQL query" fetches `postgres-tuning` even in a Rust repo).
 
-1. **Intent Parser & Phase Resolver:**
-   - The daemon detects lifecycle keyword cues (`during`, `after`, `plan`, `audit`).
-   - If an active skill pack is referenced (or default workspace rule applies), it binds that mode.
-2. **Project Workspace Storage (`.openchat/memory.sqlite`):**
-   The binding is committed to the local workspace database:
-   ```json
-   {
-     "project_id": "my-app",
-     "active_skill_bindings": {
-       "anti-slop": {
-         "mode": "during",
-         "bound_at": "2026-11-19T09:40:00Z",
-         "autoload": true
-       }
-     }
-   }
-   ```
-3. **Zero-Prompt Session Restoration:**
-   - Across restarts, new chat sessions, or context clears in this workspace, the daemon reads the binding.
-   - The user never has to re-prompt *"remember to use X"* or append manual skill flags.
-4. **Contextual Dispatch on Demand:**
-   - The daemon monitors active context (e.g., file paths being modified, user prompt intent).
-   - If editing `Navbar.tsx`, it dynamically binds the `antislop-ui` sub-skill.
-   - If modifying backend endpoints, it activates `antislop-code`.
+### 3. Dynamic Runtime Language Expansion
+When a new file type or language is created:
+1. Agent generates or touches `src/lib.rs` or runs `cargo init`.
+2. Workspace watcher flags `new_language_detected: rust`.
+3. The daemon scans all 55+ skills, identifies all matching skills (`rust-patterns`, `clippy-enforcer`, `anti-slop`), and activates them immediately without interrupting the flow.
 
-### 3. Observable Lifecycle Events & Visual Badges
-Skills are never silently injected. The engine emits an explicit WebSocket/SSE event:
+### 4. Observable Execution Badges (Eliminating the "Silent Injection" Problem)
+You will never have to wonder if a skill is active. Every turn includes transparent visual confirmation:
 
 ```json
 {
-  "type": "agent:skill_activated",
-  "skill": "anti-slop",
-  "mode": "during",
-  "active_subskills": ["antislop-ui"],
-  "source": ".openchat/skills/anti-slop/SKILL.md",
-  "trigger": "User prompt modifying frontend component (Navbar.tsx)"
+  "type": "agent:skills_composed",
+  "project": "rust-crawler",
+  "detected_stack": ["rust", "cargo"],
+  "active_skills": [
+    { "id": "rust-idioms", "mode": "during", "tokens": 420 },
+    { "id": "anti-slop", "subskills": ["antislop-code"], "mode": "during", "tokens": 310 }
+  ],
+  "total_skill_overhead": "730 tokens"
 }
 ```
 
-- **Web UI:** Live status pill: `🛡️ anti-slop [during] • UI active`
-- **Telegram & Discord:** Visual indicator preamble: `⚡ [Active Mode: anti-slop (during)]`
-
-### 4. Dynamic Agent Tool: `load_skill`
-Agents can dynamically inspect the workspace skill catalog and invoke:
-```json
-load_skill({ "skill": "anti-slop", "subskill": "antislop-code", "mode": "during" })
-```
-This leaves an explicit tool execution trace in the chat stream so the user always sees what rules are loaded.
+- **Web UI:** A sticky header bar with interactive pills:
+  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens)`
+- **Telegram & Discord:** Clean, compact header tag before replies:
+  `⚡ [Loaded: rust-idioms, anti-slop (during)]`
 
 ---
 
-## 🌐 Architectural Pillar 3: Multi-Client Core Daemon
+## 🎨 Architectural Pillar 3: Prompt & Context Compositor
+
+Inspired by modern interactive agent compositors, `open-chat` uses a dedicated **Context Compositor** pipeline before any request reaches the model:
+
+```
+[User Prompt] + [Project Memory] + [Auto-Discovered Skills] + [Active Mode: During]
+                                    │
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │     Context Compositor       │
+                     │  - Deduplicates rules        │
+                     │  - Enforces token budgets    │
+                     │  - Reconciles conflicts      │
+                     └──────────────────────────────┘
+                                    │
+                                    ▼
+                           Model Execution
+```
+
+---
+
+## 🌐 Architectural Pillar 4: Multi-Client Core Daemon
 
 Instead of managing native mobile applications, `open-chat` provides a unified headless daemon exposing:
 - **Telegram Bot Bridge:** Complete agent execution and monitoring on mobile devices via native Telegram chat with inline action buttons.
@@ -137,10 +161,10 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 
 ## 🗺️ Roadmap & Next Steps
 
-- [ ] Core daemon scaffolding (Rust / TypeScript).
+- [ ] Core daemon scaffolding (Rust).
 - [ ] SQLite + FTS5 + `sqlite-vec` memory persistence layer.
-- [ ] Universal Skill Lifecycle & Mode Engine (`during` / `after` / `plan`).
-- [ ] Auto-binding listener based on file extensions and intent triggers.
-- [ ] Event-driven skill loader & `load_skill` tool definition.
-- [ ] Telegram bot adapter integration.
-- [ ] Web UI frontend client.
+- [ ] Language & workspace stack fingerprinting scanner.
+- [ ] 50+ Skill metadata indexer with auto-binding triggers.
+- [ ] Context Compositor (token pruner & conflict deduplicator).
+- [ ] Observable event stream & multi-client UI status badges.
+- [ ] Telegram bot adapter & Web UI frontend.

@@ -25,11 +25,11 @@ In `open-chat`, **Anti-Slop is hardcoded into the Rust daemon binary as Inviolab
 // Core Engine Invariant: Embedded at compile-time directly in the Rust binary
 pub const ANTI_SLOP_LAW: &str = r#"
 [INVIOLABLE ENGINE LAW - ZERO-TOLERANCE ANTI-SLOP]
-1. ZERO CONVERSATIONAL FILLER: Never output pleasantries, confirmations ("Sure, I can help!"),
-   pre-action monologues ("I will now check..."), or post-action summaries.
-2. SURGICAL DIFF ONLY: Full-file rewrites are strictly forbidden. Only emit minimal search-and-replace hunks.
-3. SILENT VERIFICATION: Execute compiler and linter checks autonomously. Never ask the user to test what you can test.
-4. CODE OVER EXPLANATION: If code was requested, emit ONLY code diffs and compiler verification.
+1. SIGNAL OVER CEREMONY: No throat-clearing, pleasantries, apologies, self-narration, or redundant post-action summaries; communicate only useful results.
+2. SURGICAL, TASK-SIZED CHANGES: Prefer minimal diffs. Never re-emit an unchanged file when a patch suffices; do not add defensive layers, abstractions, speculative generality, wrappers, catches, or micro-optimizations without a demonstrated need.
+3. VERIFY, THEN REPORT: Run relevant compiler, tests, and linters where available; inspect their actual output, fix actionable failures, and never claim checks passed when they did not.
+4. FIT THE ACTIVE SURFACE: Bind relevant Code, UI/Design, Copy, and Human-style skills to touched files and tasks. Preserve project conventions; do not invent imports, dependencies, APIs, facts, or functionality.
+5. DELIVER WITH EVIDENCE: For edits, return a concise result and the verification actually performed. Do not grade your own work or narrate imagined checks.
 "#;
 ```
 
@@ -58,6 +58,20 @@ If a model starts generating conversational fluff (e.g., *"Certainly! Here is th
 
 ### 3. Tool-Level Full-File Rewrite Rejection
 The engine's `file_patch` tool actively rejects attempts to overwrite entire files when a surgical diff would suffice. If an agent tries to rewrite a 400-line file to update 3 lines, the tool returns a `SlopViolationError` forcing the LLM to provide a precise unified diff.
+
+### Anti-Slop Full-Spectrum Matrix
+
+The compile-time law is the common execution contract; focused skills supply the rules for each surface. The intended Context Compositor behavior is to bind skills by task, detected stack, file glob, and operation, rather than loading every rule into every prompt. On create/edit/patch/review operations, the daemon should supply applicable constraints before generation; validators and stream/tool gates should check the resulting output. Phase 2 covers the existing core law, stream filter, patch gate, and general verification loop; the surface-specific skill packs and checks listed as incomplete in Phase 3 remain roadmap work. Missing a skill must not be represented as successful validation.
+
+| Dimension | Rules and anti-patterns | Auto-binding and enforcement |
+|---|---|---|
+| **Compile-time & Architectural Engine Law** | `ANTI_SLOP_LAW` is a top-priority invariant: concise signal, scoped changes, evidence-based verification, and no fabricated project details. | Compiled into the Rust core and injected in System Frame #0 for every task, including subagents. Tool permissions, patch validation, stream filtering, and verification gates enforce the applicable rules at runtime; prompt text alone is not treated as enforcement. |
+| **Code Slop** | Avoid defensive over-engineering, unnecessary abstractions, speculative generalization, useless try/catch or wrapper layers, premature micro-optimization, redundant tests, and full-file re-emits. Keep comments informative rather than decorative or merely restating code. | Bind Code skills on relevant code operations: `.rs` (Rust), `.ts`/`.tsx` (TypeScript), and other registered source globs. `file_patch` favors minimal hunks and rejects avoidable whole-file replacement; select language-specific checks and report real linter/compiler output. |
+| **UI/UX & Design Slop** | Reject generic purple-gradient AI templates, formulaic three-card hero landings, low-contrast text, unstyled controls, arbitrary generic animation, and desktop-only layouts. Require a deliberate visual hierarchy, usable states, accessible contrast, and a mobile layout. | Bind UI/design guidance when UI surfaces are created or changed, especially `.tsx`, `.jsx`, `.css`, and registered template/style files; mobile-layout guidance applies to responsive surfaces. Runtime review/check gates assess contrast, breakpoints, semantics, interaction states, and reduced-motion needs where tooling permits; do not claim visual checks that were not run. |
+| **Copywriting & Prose Slop** | Remove buzzword-heavy corporate filler, throat-clearing, canned transitions, overused terms such as “delve,” “testament,” and “beacon,” emoji overload, and unnecessary apologies. Prefer concrete, direct, audience-appropriate language. | Bind Copywriting/Human-style skills to prose work and content-file edits such as `.md` and `.txt` (and UI copy embedded in components). A prose delivery gate checks specificity, relevance, tone, and unsupported claims; stream filtering may strip known prefatory filler without rewriting substantive user content. |
+| **Structural & Agent Execution Slop** | No grading own homework, endless self-narration, ignored linter diagnostics, hallucinated imports/APIs, or claims unsupported by tool results. Keep edits within task scope and distinguish verified facts from assumptions. | The compositor applies this law to every agent and delegated task. Tool results are authoritative: verification consumes actual exit status/output, blocks or flags unresolved failures, and the final response states only checks performed. A patch/import review catches unsupported dependency changes where repository tooling allows. |
+
+File extensions are routing hints, not the only trigger: task intent, workspace manifests, skill metadata, and explicitly requested operations can bind or suppress a skill. Multiple relevant dimensions may bind together (for example, a `.tsx` change with UI copy binds UI and prose guidance). Rules run before generation and at the appropriate stream, patch, and verification gates; an unavailable validator is disclosed, not simulated.
 
 ---
 
@@ -283,6 +297,7 @@ When managing a library of **55+ skills**, manually calling them or dumping them
         └────────────────────────────────────────────────────────┘
                                      │
               ┌──────────────────────┴──────────────────────┐
+              ┌──────────────────────┴──────────────────────┐
               │                                             │
       [Skill Matched]                                 [No Skill Found]
               │                                             │
@@ -416,17 +431,25 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse exact) + `sqlite-vec` (dense semantic) with automatic contradiction resolution and WAL hygiene.
 - [x] **Dynamic Rolling Context Compactor:** Automated pruning of intermediate terminal logs and tool payloads into semantic one-line digests.
 
-### Phase 2: Token Efficiency & Anti-Slop Core Engine Law
+### Phase 2: Token Efficiency, Core Engine Law & Runtime Anti-Slop Gates
 - [x] **Compile-Time Anti-Slop Law Invariant:** Hardcoded `const ANTI_SLOP_LAW` embedded in Rust binary, injected into System Frame #0 above all prompt contexts.
 - [x] **Stream Slop Interceptor:** In-flight Trie-based prefix filter that strips conversational pleasantries before reaching the user UI.
 - [x] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool rejecting full-file rewrites with `SlopViolationError`.
 - [x] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
+- [x] **Full-Spectrum Anti-Slop Contract:** Compile-time architectural law spans code, UI/design, copy/prose, and agent execution; relevant rules bind to the active task and file operations.
+- [x] **Runtime Slop Gates:** Stream-level conversational filtering, surgical patch validation, and evidence-based verification; disclose missing/unavailable validators rather than claiming success.
+- [ ] **Code-Surface Anti-Slop Skill Pack:** Auto-bind code/comment hygiene by source globs; block needless abstractions, wrappers, catches, micro-optimizations, and full-file re-emits.
+- [ ] **UI/Design & Mobile Quality Skill Pack:** Auto-bind design, accessibility/contrast, interaction-state, and responsive/mobile checks for UI surfaces.
+- [ ] **Copywriting/Human Prose Skill Pack:** Auto-bind direct-language guidance to `.md`, `.txt`, and UI copy; screen for filler, buzzwords, canned phrasing, and emoji overload.
 - [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.
 
-### Phase 3: 50+ Skill Scale & Stack Discovery
+### Phase 3: 50+ Skill Scale, Full-Spectrum Anti-Slop & Stack Discovery
 - [x] **Deterministic Stack Fingerprinter:** Real-time workspace scanner detecting active languages (`Cargo.toml`, `package.json`, `go.mod`, etc.).
 - [x] **55+ Skill Index Registry:** YAML frontmatter parser and indexing engine mapping skills to languages, globs, dependencies, and execution modes.
-- [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks with one-click `skill_bootstrap` authoring.
+- [ ] **Full-Spectrum Anti-Slop Skill Suite:** Integrate Code, UI/Design/Mobile, Copywriting/Human, and core Anti-Slop skills from the [reference repository](https://github.com/miqdadbadjuber/anti-slop); preserve scoped rules and provenance.
+- [ ] **Operation-Aware Auto-Binding:** Bind UI rules for `.tsx`/`.css`, Code rules for `.rs`/`.ts`, and Copywriting rules for `.md`/`.txt` create/edit/review operations, with intent- and manifest-based routing beyond extensions.
+- [ ] **Runtime Stream & Surface Filtering:** Enforce output/prose gates and patch-time code/UI checks, then run available formatters, linters, accessibility/contrast and responsive checks. Record actual results and disclose unavailable checks.
+- [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks or content surfaces with one-click `skill_bootstrap` authoring.
 
 ### Phase 4: Context Compositor & Observability
 - [x] **Context Compositor Pipeline:** Pre-flight prompt assembler that injects Anti-Slop Law, deduplicates rules, and enforces strict token budgets.

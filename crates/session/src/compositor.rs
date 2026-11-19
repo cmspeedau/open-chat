@@ -37,9 +37,9 @@ never recall it from the conversation.
 - A failing verification keeps the turn open; expect the engine to re-run it.";
 
 /// What survived assembly, per section, for telemetry and debugging.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionReport {
-    pub name: &'static str,
+    pub name: String,
     pub tokens: usize,
     /// False when the budget forced the section out entirely.
     pub kept: bool,
@@ -50,6 +50,9 @@ pub struct Composed {
     pub messages: Vec<ChatMessage>,
     pub report: Vec<SectionReport>,
     pub total_tokens: usize,
+    /// Rule lines dropped as duplicates across the law and skill bodies
+    /// (Phase 4: "deduplicates rules"). Code lines are never touched.
+    pub deduped_rule_lines: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -65,77 +68,97 @@ impl Compositor {
     }
 
     /// Compose one request. Trimming priority when over budget, worst off
-    /// first: memory tail hits, then older transcript bytes, then oldest
-    /// history messages. System and the user turn are never cut; if those
-    /// alone exceed the budget we say so honestly in the report by
-    /// keeping everything (`kept: true`) and letting the caller raise the
-    /// cap, rather than silently amputating instructions.
+    /// first: memory tail hits, then least-priority skill bodies, then
+    /// older transcript bytes, then oldest history messages. System law
+    /// and the user turn are never cut; if those alone exceed the budget
+    /// we say so honestly in the report by keeping everything
+    /// (`kept: true`) and letting the caller raise the cap, rather than
+    /// silently amputating instructions.
     #[must_use]
     pub fn compose(
         &self,
         extra_system: &str,
+        skills: &[(&str, &str)],
         memory_hits: &[String],
         transcript: &str,
         history: &[ChatMessage],
         user: &str,
     ) -> Composed {
         // System Frame #0: the law leads the first system message, above
-        // conventions and above any caller-supplied extra context.
-        let mut system = String::from(ANTI_SLOP_LAW);
-        system.push('\n');
-        system.push_str(BASE_SYSTEM);
+        // conventions, skills, and any caller-supplied extra context.
+        let mut head = String::from(ANTI_SLOP_LAW);
+        head.push('\n');
+        head.push_str(BASE_SYSTEM);
         if !extra_system.is_empty() {
-            system.push('\n');
-            system.push_str(extra_system);
+            head.push('\n');
+            head.push_str(extra_system);
         }
 
         // Droppable sections, in the order they lose content.
+        let mut skills_kept: Vec<(String, String)> = skills
+            .iter()
+            .map(|(id, b)| ((*id).to_owned(), (*b).to_owned()))
+            .collect();
         let mut memory = memory_hits.to_vec();
         let mut transcript = transcript.to_owned();
         let mut history = history.to_vec();
 
         let estimate = |s: &str| openchat_core::estimate_tokens(s);
-        let report =
-            |mem: &[String], tr: &str, hist: &[ChatMessage]| -> (Vec<SectionReport>, usize) {
-                let sections: [(&'static str, usize, bool); 5] = [
-                    ("system", estimate(&system), true),
-                    (
-                        "memory",
-                        mem.iter().map(|h| estimate(h) + 2).sum(),
-                        !mem.is_empty(),
-                    ),
-                    ("transcript", estimate(tr), !tr.is_empty()),
-                    (
-                        "history",
-                        hist.iter().map(|m| estimate(&m.content) + 4).sum(),
-                        !hist.is_empty(),
-                    ),
-                    ("user", estimate(user), true),
-                ];
-                let total = sections.iter().map(|(_, t, _)| t).sum();
+        let skills_text = |sk: &[(String, String)]| -> usize {
+            sk.iter()
+                .map(|(id, b)| estimate(id) + estimate(b) + 8)
+                .sum()
+        };
+        let report = |sk: &[(String, String)],
+                      mem: &[String],
+                      tr: &str,
+                      hist: &[ChatMessage]|
+         -> (Vec<SectionReport>, usize) {
+            let sections: [(&'static str, usize, bool); 6] = [
+                ("system", estimate(&head), true),
+                ("skills", skills_text(sk), !sk.is_empty()),
                 (
-                    sections
-                        .iter()
-                        .map(|(n, t, kept)| SectionReport {
-                            name: n,
-                            tokens: *t,
-                            kept: *kept,
-                        })
-                        .collect(),
-                    total,
-                )
-            };
+                    "memory",
+                    mem.iter().map(|h| estimate(h) + 2).sum(),
+                    !mem.is_empty(),
+                ),
+                ("transcript", estimate(tr), !tr.is_empty()),
+                (
+                    "history",
+                    hist.iter().map(|m| estimate(&m.content) + 4).sum(),
+                    !hist.is_empty(),
+                ),
+                ("user", estimate(user), true),
+            ];
+            let total = sections.iter().map(|(_, t, _)| t).sum();
+            (
+                sections
+                    .iter()
+                    .map(|(n, t, kept)| SectionReport {
+                        name: (*n).to_owned(),
+                        tokens: *t,
+                        kept: *kept,
+                    })
+                    .collect(),
+                total,
+            )
+        };
 
-        let (mut rep, mut total) = report(&memory, &transcript, &history);
+        let (mut rep, mut total) = report(&skills_kept, &memory, &transcript, &history);
         // Memory: drop lowest-ranked tail hits first (recall returns best
         // first, so the cheap part of the budget goes to the best evidence).
         while total > self.max_total_tokens && memory.len() > 1 {
             memory.pop();
-            (rep, total) = report(&memory, &transcript, &history);
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
         }
         if total > self.max_total_tokens && !memory.is_empty() {
             memory.clear();
-            (rep, total) = report(&memory, &transcript, &history);
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
+        }
+        // Skills: already priority-ordered by the caller; evict the tail.
+        while total > self.max_total_tokens && !skills_kept.is_empty() {
+            skills_kept.pop();
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
         }
         // Transcript: keep the freshest tail (that is where live failures
         // are), folding the rest with an explicit marker.
@@ -149,16 +172,44 @@ impl Compositor {
                 cut += 1;
             }
             transcript = format!("[older output folded]\n{}", &transcript[cut..]);
-            (rep, total) = report(&memory, &transcript, &history);
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
         }
         // History: evict oldest messages in whole entries.
         while total > self.max_total_tokens && history.len() > 1 {
             history.remove(0);
-            (rep, total) = report(&memory, &transcript, &history);
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
         }
         if total > self.max_total_tokens {
             history.clear();
-            (rep, total) = report(&memory, &transcript, &history);
+            (rep, total) = report(&skills_kept, &memory, &transcript, &history);
+        }
+
+        let mut system = head;
+        // Rule dedupe: bullet/heading lines already present (the law, the
+        // conventions block, an earlier skill) are not repeated. Short
+        // lines and anything that is not a rule marker stay untouched so
+        // code examples survive verbatim.
+        let mut seen_rules: std::collections::HashSet<String> = system
+            .lines()
+            .map(str::trim)
+            .filter(|l| is_rule_line(l))
+            .map(str::to_owned)
+            .collect();
+        let mut deduped_rule_lines = 0usize;
+        if !skills_kept.is_empty() {
+            system.push_str("\n\n## Loaded skills (binding for this stack)\n");
+            for (id, body) in &skills_kept {
+                system.push_str(&format!("\n### {id}\n"));
+                for line in body.lines() {
+                    let t = line.trim();
+                    if is_rule_line(t) && !seen_rules.insert(t.to_owned()) {
+                        deduped_rule_lines += 1;
+                        continue;
+                    }
+                    system.push_str(line);
+                    system.push('\n');
+                }
+            }
         }
 
         let mut out: Vec<ChatMessage> = Vec::with_capacity(memory.len() + history.len() + 3);
@@ -174,13 +225,20 @@ impl Compositor {
         out.extend(history.iter().cloned());
         out.push(ChatMessage::user(user.to_owned()));
 
-        rep.retain(|s| s.tokens > 0 || s.name == "system" || s.name == "user");
+        // Report all six sections even at zero tokens: honest telemetry for the badges.
         Composed {
             messages: out,
             report: rep,
             total_tokens: total,
+            deduped_rule_lines,
         }
     }
+}
+
+/// Heading or bullet lines long enough to be a real rule, not stray
+/// punctuation in a code sample.
+fn is_rule_line(t: &str) -> bool {
+    (t.starts_with('-') || t.starts_with('#')) && t.len() >= 15
 }
 
 fn render_memory(hits: &[String]) -> Option<String> {
@@ -219,7 +277,7 @@ mod tests {
     #[test]
     fn anti_slop_block_always_present() {
         let c = Compositor::new(100_000);
-        let out = c.compose("", &[], "", &[], "hello");
+        let out = c.compose("", &[], &[], "", &[], "hello");
         let s = system_text(&out);
         assert!(s.starts_with(ANTI_SLOP_LAW), "law must be frame 0");
         assert!(s.contains(BASE_SYSTEM));
@@ -231,7 +289,7 @@ mod tests {
     fn ordering_is_system_history_user() {
         let c = Compositor::new(100_000);
         let history = vec![ChatMessage::user("old q"), ChatMessage::assistant("old a")];
-        let out = c.compose("X", &["mem".into()], "tr", &history, "new q");
+        let out = c.compose("X", &[], &["mem".into()], "tr", &history, "new q");
         let roles: Vec<Role> = out.messages.iter().map(|m| m.role).collect();
         assert_eq!(
             roles,
@@ -253,7 +311,7 @@ mod tests {
     fn budget_drops_memory_tail_first() {
         let c = Compositor::new(700);
         let hits: Vec<String> = (0..8).map(|i| format!("hit{i} {}", big(20))).collect();
-        let out = c.compose("", &hits, "", &[], &format!("q {}", big(3)));
+        let out = c.compose("", &[], &hits, "", &[], &format!("q {}", big(3)));
         let mem = out
             .report
             .iter()
@@ -278,7 +336,7 @@ mod tests {
     fn transcript_folds_to_freshest_tail() {
         let c = Compositor::new(600);
         let transcript = format!("{}FRESH LINE", big(200));
-        let out = c.compose("", &[], &transcript, &[], "q");
+        let out = c.compose("", &[], &[], &transcript, &[], "q");
         let rendered = out
             .messages
             .iter()
@@ -296,7 +354,7 @@ mod tests {
     #[test]
     fn mandatory_sections_never_get_silently_cut() {
         let c = Compositor::new(10); // impossible budget
-        let out = c.compose("", &[], "", &[], "hello");
+        let out = c.compose("", &[], &[], "", &[], "hello");
         assert!(out.messages.iter().any(|m| m.role == Role::System));
         assert_eq!(out.messages.last().unwrap().content, "hello");
         let sys = out.report.iter().find(|s| s.name == "system").unwrap();
@@ -308,6 +366,7 @@ mod tests {
         let c = Compositor::new(100_000);
         let out = c.compose(
             "",
+            &[("rust", "body text here")],
             &["alpha".into()],
             "beta",
             &[ChatMessage::user("gamma")],
@@ -315,5 +374,70 @@ mod tests {
         );
         let sum: usize = out.report.iter().map(|s| s.tokens).sum();
         assert_eq!(sum, out.total_tokens);
+        let sys = out
+            .messages
+            .iter()
+            .find(|m| m.role == Role::System)
+            .unwrap();
+        assert!(
+            sys.content.contains("### rust"),
+            "skills ride in system frame"
+        );
+        assert!(
+            sys.content.find("INVIOLABLE").unwrap() < sys.content.find("Loaded skills").unwrap()
+        );
+    }
+
+    #[test]
+    fn tight_budget_evicts_skill_tail_after_memory() {
+        let c = Compositor::new(440);
+        let skills = [("first", "S".repeat(400)), ("second", "T".repeat(400))];
+        let pairs: Vec<(&str, &str)> = skills.iter().map(|(a, b)| (*a, b.as_str())).collect();
+        let out = c.compose("", &pairs, &[], "", &[], "q");
+        let sys = out
+            .messages
+            .iter()
+            .find(|m| m.role == Role::System)
+            .unwrap();
+        assert!(sys.content.contains("first"));
+        assert!(!sys.content.contains("T T"), "second skill evicted");
+        let sk = out.report.iter().find(|s| s.name == "skills").unwrap();
+        assert!(out.total_tokens <= 440, "{}", out.total_tokens);
+        assert!(sk.kept);
+    }
+
+    #[test]
+    fn duplicate_rule_lines_are_deduped_code_is_not() {
+        let c = Compositor::new(100_000);
+        let shared = "- Always handle errors explicitly at every boundary";
+        let s1 = format!("{shared}\nlet x: u8 = \"s\"; // same short text never");
+        let s2 = format!("{shared}\n- Another distinct rule line for this skill here");
+        let out = c.compose(
+            "",
+            &[("one", s1.as_str()), ("two", s2.as_str())],
+            &[],
+            "",
+            &[],
+            "q",
+        );
+        let sys = &out.messages[0].content;
+        assert_eq!(
+            sys.matches(shared).count(),
+            1,
+            "duplicate rule shipped twice"
+        );
+        assert_eq!(out.deduped_rule_lines, 1);
+        assert!(sys.contains("let x: u8"), "code line survived");
+        assert!(sys.contains("Another distinct rule"));
+    }
+
+    #[test]
+    fn all_skills_evicted_reports_not_kept() {
+        let c = Compositor::new(360);
+        let body = "Z".repeat(2000);
+        let out = c.compose("", &[("huge", body.as_str())], &[], "", &[], "q");
+        let sk = out.report.iter().find(|s| s.name == "skills").unwrap();
+        assert!(!sk.kept);
+        assert!(!out.messages[0].content.contains("Loaded skills"));
     }
 }

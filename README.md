@@ -422,8 +422,8 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks with one-click `skill_bootstrap` authoring.
 
 ### Phase 4: Context Compositor & Observability
-- [ ] **Context Compositor Pipeline:** Pre-flight prompt assembler that injects Anti-Slop Law, deduplicates rules, and enforces strict token budgets.
-- [ ] **Real-Time Token, Memory & Governor Badges:** Transparent per-turn telemetry showing active skills, token consumption, memory health status, active worker count, and CPU core cap.
+- [x] **Context Compositor Pipeline:** Pre-flight prompt assembler that injects Anti-Slop Law, deduplicates rules, and enforces strict token budgets.
+- [x] **Real-Time Token, Memory & Governor Badges:** Transparent per-turn telemetry showing active skills, token consumption, memory health status, active worker count, and CPU core cap.
 
 ### Phase 5: Multi-Interface Adapters & Resilient UI
 - [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.

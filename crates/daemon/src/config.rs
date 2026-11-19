@@ -26,13 +26,30 @@ struct RawConfig {
 #[serde(deny_unknown_fields)]
 struct RawSkills {
     paths: Option<Vec<String>>,
+    per_skill_max_tokens: Option<usize>,
+    total_max_tokens: Option<usize>,
 }
 
-/// Extra skill catalog roots from `[skills] paths = [...]`. Project and
-/// user `.openchat/skills` defaults are appended by the caller.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Skill catalog roots and prompt-budget caps.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillsSettings {
     pub paths: Vec<PathBuf>,
+    /// Clamp for one skill body before it enters the prompt.
+    pub per_skill_max_tokens: usize,
+    /// Ceiling for the whole skills section (README badge overhead).
+    pub total_max_tokens: usize,
+}
+
+impl Default for SkillsSettings {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            // Chosen so ~4 focused skills fit a laptop-sized context
+            // window while leaving the 24k request mostly user content.
+            per_skill_max_tokens: 1_200,
+            total_max_tokens: 4_800,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -172,11 +189,21 @@ impl RawConfig {
     }
 
     fn merge_skills(self, base: SkillsSettings) -> SkillsSettings {
-        match self.skills.paths.filter(|v| !v.is_empty()) {
-            Some(paths) => SkillsSettings {
-                paths: paths.into_iter().map(PathBuf::from).collect(),
-            },
-            None => base,
+        let raw = self.skills;
+        SkillsSettings {
+            paths: raw
+                .paths
+                .filter(|v| !v.is_empty())
+                .map(|p| p.into_iter().map(PathBuf::from).collect())
+                .unwrap_or(base.paths),
+            per_skill_max_tokens: raw
+                .per_skill_max_tokens
+                .filter(|n| *n > 0)
+                .unwrap_or(base.per_skill_max_tokens),
+            total_max_tokens: raw
+                .total_max_tokens
+                .filter(|n| *n > 0)
+                .unwrap_or(base.total_max_tokens),
         }
     }
 }

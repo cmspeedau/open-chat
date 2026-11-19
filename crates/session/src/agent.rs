@@ -14,6 +14,7 @@ use openchat_tools::compact::{ToolRecord, Transcript};
 use tokio::sync::Mutex;
 
 use crate::compositor::{Composed, Compositor};
+use crate::events::{Badges, TurnEvent};
 use crate::provider::{ChatMessage, ChatRequest, Provider, ToolCall};
 use crate::slop::strip_leading_slop;
 use crate::tools::{ApplyPatchTool, Registry};
@@ -64,9 +65,19 @@ pub struct Agent<'a> {
     registry: &'a Registry,
     compositor: Compositor,
     memory: Option<Arc<Mutex<MemoryStore>>>,
+    /// Bound skill (id, body) pairs injected into System Frame #0.
+    skills: Vec<(String, String)>,
     model: String,
     max_iterations: usize,
+    /// Optional wire-event fan-out for remote interfaces (SSE, bots).
+    publisher: Option<tokio::sync::broadcast::Sender<TurnEvent>>,
+    /// Daemon-supplied closure completing the badges at turn close.
+    badges_fn: Option<BadgesFn>,
 }
+
+/// Supplies the badges document at turn close from the final composition
+/// and the stripped-filler byte count.
+pub type BadgesFn = Box<dyn Fn(&Composed, usize) -> Badges + Send + Sync>;
 
 impl<'a> Agent<'a> {
     #[must_use]
@@ -80,9 +91,40 @@ impl<'a> Agent<'a> {
             registry,
             compositor: Compositor::new(24_000),
             memory,
+            skills: Vec::new(),
             model: String::new(),
             max_iterations: 8,
+            publisher: None,
+            badges_fn: None,
         }
+    }
+
+    /// Publish [`TurnEvent`]s to a broadcast channel in addition to the
+    /// in-process callback; used by the SSE server and bot adapters.
+    #[must_use]
+    pub fn with_publisher(mut self, tx: tokio::sync::broadcast::Sender<TurnEvent>) -> Self {
+        self.publisher = Some(tx);
+        self
+    }
+
+    /// Supplies the final badges value at `TurnClosed` from the last
+    /// composition and the turn's stripped-filler byte count.
+    #[must_use]
+    pub fn with_badges(
+        mut self,
+        f: impl Fn(&Composed, usize) -> Badges + Send + Sync + 'static,
+    ) -> Self {
+        self.badges_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Attach the bound skill bodies for this stack (from
+    /// `openchat_skills::prompt_set`). Idempotent per turn; the compositor
+    /// may still evict the tail under budget pressure.
+    #[must_use]
+    pub fn with_skills(mut self, skills: Vec<(String, String)>) -> Self {
+        self.skills = skills;
+        self
     }
 
     /// Builder knobs; defaults suit a laptop daemon (24k-token window,
@@ -104,7 +146,7 @@ impl<'a> Agent<'a> {
     pub async fn run(
         &self,
         user: &str,
-        on_event: &mut dyn FnMut(&AgentEvent<'_>),
+        on_event: &mut (dyn FnMut(&AgentEvent<'_>) + Send),
     ) -> Result<AgentOutcome, AgentError> {
         let mut history: Vec<ChatMessage> = Vec::new();
         let mut transcript = Transcript::new(8 * 1024);
@@ -113,38 +155,64 @@ impl<'a> Agent<'a> {
         let mut final_text: Option<String> = None;
         let mut slop_stripped_bytes = 0usize;
         let mut iterations = 0usize;
+        self.publish(TurnEvent::TurnStarted {
+            prompt: user.to_owned(),
+        });
 
         for iteration in 1..=self.max_iterations {
             iterations = iteration;
             let memory_hits = self.recall_memories(user).await;
             let rendered = transcript.render();
-            let composed = self
-                .compositor
-                .compose("", &memory_hits, &rendered, &history, user);
+            let skill_pairs: Vec<(&str, &str)> = self
+                .skills
+                .iter()
+                .map(|(i, b)| (i.as_str(), b.as_str()))
+                .collect();
+            let composed =
+                self.compositor
+                    .compose("", &skill_pairs, &memory_hits, &rendered, &history, user);
             on_event(&AgentEvent::Iteration {
                 index: iteration,
                 composed: &composed,
             });
+            self.publish(TurnEvent::Iteration {
+                index: iteration,
+                total_tokens: composed.total_tokens,
+                sections: composed.report.clone(),
+            });
             last_composed = Some(composed.clone());
 
-            let resp = self
+            let resp = match self
                 .provider
                 .chat(ChatRequest {
                     messages: composed.messages.clone(),
                     tools: self.registry.schemas(),
                     model: self.model.clone(),
                 })
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    self.publish(TurnEvent::TurnFailed {
+                        error: e.to_string(),
+                    });
+                    return Err(e.into());
+                }
+            };
 
             // Enforcement point 2: leading filler never reaches history,
             // events, or the user; the byte count is kept as telemetry.
             let (clean_text, stripped) = strip_leading_slop(&resp.text);
             if stripped > 0 {
                 slop_stripped_bytes += stripped;
+                self.publish(TurnEvent::SlopStripped { bytes: stripped });
                 tracing::warn!(bytes = stripped, "slop interceptor stripped model filler");
             }
             if !clean_text.is_empty() {
                 on_event(&AgentEvent::AssistantText(clean_text));
+                self.publish(TurnEvent::AssistantText {
+                    text: clean_text.to_owned(),
+                });
             }
             history.push(assistant_message(clean_text, resp.tool_calls.clone()));
 
@@ -153,12 +221,14 @@ impl<'a> Agent<'a> {
                     Gate::Clear(ok_flag) => {
                         if let Some(ok) = ok_flag {
                             on_event(&AgentEvent::FinalVerification { ok });
+                            self.publish(TurnEvent::FinalVerification { ok });
                         }
                         final_text = Some(clean_text.to_owned());
                         break;
                     }
                     Gate::Repair(record) => {
                         on_event(&AgentEvent::FinalVerification { ok: false });
+                        self.publish(TurnEvent::FinalVerification { ok: false });
                         records.push(record.clone());
                         transcript.push(record.clone());
                         history.push(ChatMessage::user(format!(
@@ -186,21 +256,70 @@ impl<'a> Agent<'a> {
                     ok: outcome.ok,
                     digest: &digest,
                 });
+                self.publish(TurnEvent::ToolCalled {
+                    name: call.name.clone(),
+                    ok: outcome.ok,
+                    digest: digest.clone(),
+                });
                 history.push(ChatMessage::tool(call.id.clone(), outcome.text));
             }
         }
 
-        let composed = last_composed.ok_or(AgentError::BudgetExhausted(self.max_iterations))?;
+        let Some(composed) = last_composed else {
+            let e = AgentError::BudgetExhausted(self.max_iterations);
+            self.publish(TurnEvent::TurnFailed {
+                error: e.to_string(),
+            });
+            return Err(e);
+        };
         match final_text {
-            Some(text) => Ok(AgentOutcome {
-                text,
-                iterations,
-                records,
-                composed,
-                slop_stripped_bytes,
-            }),
-            None => Err(AgentError::BudgetExhausted(self.max_iterations)),
+            Some(text) => {
+                let badges = self.build_badges(&composed, slop_stripped_bytes);
+                self.publish(TurnEvent::TurnClosed {
+                    text: text.clone(),
+                    iterations,
+                    badges,
+                });
+                Ok(AgentOutcome {
+                    text,
+                    iterations,
+                    records,
+                    composed,
+                    slop_stripped_bytes,
+                })
+            }
+            None => {
+                let e = AgentError::BudgetExhausted(self.max_iterations);
+                self.publish(TurnEvent::TurnFailed {
+                    error: e.to_string(),
+                });
+                Err(e)
+            }
         }
+    }
+
+    fn publish(&self, ev: TurnEvent) {
+        if let Some(tx) = &self.publisher {
+            // No subscribers is a valid state (CLI runs without a server).
+            let _ = tx.send(ev);
+        }
+    }
+
+    fn build_badges(&self, composed: &Composed, slop: usize) -> Badges {
+        self.badges_fn.as_ref().map_or_else(
+            || Badges {
+                stack: String::new(),
+                skills: Vec::new(),
+                prompt_tokens: composed.total_tokens,
+                cores: 0,
+                usable_cores: 0,
+                free_build_slots: 0,
+                memory_entries: 0,
+                slop_stripped_bytes: slop,
+                deduped_rule_lines: composed.deduped_rule_lines,
+            },
+            |f| f(composed, slop),
+        )
     }
 
     /// May the turn close? If a patch left verification pending, re-run the
@@ -395,6 +514,35 @@ mod tests {
         assert!(
             !final_msgs.iter().any(|m| m.content.contains("Sure!")),
             "stripped filler must not round-trip upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_bodies_reach_the_system_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = harness(dir.path(), None).await;
+        let provider = Scripted::new(vec![text_reply("ok")]);
+        let out = Agent::new(&provider, &registry, None)
+            .with_skills(vec![(
+                "rust".into(),
+                "Propagate errors with ? at boundaries.".into(),
+            )])
+            .run("q", &mut |_| {})
+            .await
+            .unwrap();
+        let seen = provider.seen.lock().await;
+        let sys = &seen[0].messages[0].content;
+        assert!(sys.contains("### rust"), "skill block missing");
+        assert!(sys.contains("Propagate errors"), "skill body missing");
+        assert!(
+            sys.find("INVIOLABLE ENGINE LAW").unwrap() < sys.find("### rust").unwrap(),
+            "law precedes skills"
+        );
+        assert!(
+            out.composed
+                .report
+                .iter()
+                .any(|s| s.name == "skills" && s.kept)
         );
     }
 

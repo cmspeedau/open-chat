@@ -33,6 +33,11 @@ pub struct Skill {
     pub explicit_triggers: bool,
     /// Trigger-less but declares itself always-on (see [`ALWAYS_MARKERS`]).
     pub universal: bool,
+    /// Match quality: 0 = explicit front-matter or id/name says the
+    /// language, 1 = description-only hit, 2 = universal. Prompt-budget
+    /// allocation prefers 0 so the stack's core skill is never starved by
+    /// tangential description matches.
+    pub strength: u8,
 }
 
 /// Front-matter/description markers that declare a skill stack-agnostic.
@@ -150,6 +155,7 @@ pub fn parse_skill(id: &str, path: &Path, text: &str) -> Skill {
         }
     }
 
+    let mut strength = if explicit_triggers { 0 } else { 2 };
     if languages.is_empty() {
         // Skill files named after a language are that language, full stop.
         languages = Language::ALL
@@ -157,6 +163,9 @@ pub fn parse_skill(id: &str, path: &Path, text: &str) -> Skill {
             .copied()
             .filter(|l| id.eq_ignore_ascii_case(l.as_str()))
             .collect();
+        if !languages.is_empty() {
+            strength = 0;
+        }
     }
     if languages.is_empty() {
         // Strong pass: whole-word hits in id + name only. A language
@@ -168,6 +177,9 @@ pub fn parse_skill(id: &str, path: &Path, text: &str) -> Skill {
             .copied()
             .filter(|l| l.matches_text(&strong))
             .collect();
+        if !languages.is_empty() {
+            strength = 0;
+        }
     }
     if languages.is_empty() {
         // Weak pass: description, used only when the name said nothing.
@@ -177,12 +189,16 @@ pub fn parse_skill(id: &str, path: &Path, text: &str) -> Skill {
             .copied()
             .filter(|l| l.matches_text(&weak))
             .collect();
+        if !languages.is_empty() {
+            strength = 1;
+        }
     }
 
     let haystack = format!("{id} {name} {description}").to_ascii_lowercase();
     let universal = languages.is_empty()
         && explicit_pats.is_empty()
         && ALWAYS_MARKERS.iter().any(|m| haystack.contains(m));
+    let final_strength = if languages.is_empty() { 2 } else { strength };
 
     Skill {
         id: id.to_owned(),
@@ -194,6 +210,7 @@ pub fn parse_skill(id: &str, path: &Path, text: &str) -> Skill {
         tokens: openchat_tokens(body),
         explicit_triggers,
         universal,
+        strength: final_strength,
     }
 }
 
@@ -220,7 +237,7 @@ fn openchat_tokens(text: &str) -> usize {
 /// Returns (front-matter map, body). A deliberately flat parser: only
 /// top-level `key: value` pairs (inline or `- item` lists joined), enough
 /// for trigger metadata without a YAML dependency.
-fn split_front_matter(text: &str) -> (std::collections::BTreeMap<String, String>, &str) {
+pub(crate) fn split_front_matter(text: &str) -> (std::collections::BTreeMap<String, String>, &str) {
     let mut meta = std::collections::BTreeMap::new();
     let Some(rest) = text
         .strip_prefix("---\n")

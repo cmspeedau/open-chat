@@ -8,8 +8,10 @@
 
 pub mod bind;
 pub mod fingerprint;
+pub mod prompt;
 pub mod registry;
 
 pub use bind::{Binding, Gap, bind};
 pub use fingerprint::{Fingerprint, Language, fingerprint};
+pub use prompt::{PromptSkill, prompt_set};
 pub use registry::{Skill, load_roots};

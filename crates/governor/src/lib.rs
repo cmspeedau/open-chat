@@ -66,10 +66,13 @@ impl Default for GovernorConfig {
 }
 
 /// The arbiter: owns the core budget, the shared build semaphore, the
-/// priority policy, and the memory headroom guard.
+/// priority policy, and the memory headroom guard. The core budget is
+/// live-adjustable ([`Governor::rescope`]) so chat commands like `/cores 2`
+/// apply without a daemon restart.
 #[derive(Debug)]
 pub struct Governor {
-    cpu: CpuSet,
+    spec: std::sync::RwLock<CpuCores>,
+    cpu: std::sync::RwLock<crate::cpu::CpuSet>,
     queue: BuildQueue,
     priority: Priority,
     headroom: MemoryHeadroom,
@@ -85,7 +88,8 @@ impl Governor {
             "governor online"
         );
         Ok(Self {
-            cpu,
+            spec: std::sync::RwLock::new(config.max_cpu_cores),
+            cpu: std::sync::RwLock::new(cpu),
             queue: BuildQueue::new(config.max_concurrent_builds.max(1)),
             priority: Priority::new(config.low_process_priority),
             headroom: MemoryHeadroom::with_budget(
@@ -95,10 +99,41 @@ impl Governor {
         })
     }
 
-    /// Cores the governor has granted itself after user cap + OS availability.
+    /// Cores the governor has granted itself after user cap + OS
+    /// availability (owned snapshot; cheap).
     #[must_use]
-    pub fn cpus(&self) -> &CpuSet {
-        &self.cpu
+    pub fn cpus(&self) -> CpuSet {
+        self.cpu
+            .read()
+            .expect("governor cpu lock never poisoned")
+            .clone()
+    }
+
+    /// Change the core budget at runtime (`/cores 2`, `/cores 50%`). New
+    /// children pick the mask up at their next spawn; running children keep
+    /// the mask they started with, which is exactly the README's "without
+    /// needing to restart the daemon".
+    ///
+    /// # Errors
+    ///
+    /// Same resolution errors as [`Governor::new`]; the previous budget
+    /// stays in force on error.
+    pub fn rescope(&self, spec: CpuCores) -> Result<(), GovernorError> {
+        let resolved = CpuSet::resolve(spec)?;
+        let mut cpu = self.cpu.write().expect("governor cpu lock never poisoned");
+        *cpu = resolved;
+        *self
+            .spec
+            .write()
+            .expect("governor spec lock never poisoned") = spec;
+        tracing::info!(cores = cpu.len(), "governor rescoped");
+        Ok(())
+    }
+
+    /// The active core spec as last requested by the user.
+    #[must_use]
+    pub fn spec(&self) -> CpuCores {
+        *self.spec.read().expect("governor spec lock never poisoned")
     }
 
     /// Per-process memory ceiling from config.
@@ -140,9 +175,10 @@ impl Governor {
     /// Per-turn telemetry snapshot for the observability badges (Phase 4).
     #[must_use]
     pub fn snapshot(&self) -> GovernorSnapshot {
+        let cpu = self.cpu.read().expect("governor cpu lock never poisoned");
         GovernorSnapshot {
-            cores: self.cpu.len(),
-            usable_total: self.cpu.usable_total(),
+            cores: cpu.len(),
+            usable_total: cpu.usable_total(),
             free_build_slots: self.queue.available_slots(),
             memory_free_ratio: self.headroom.free_ratio(),
             nice_applied: self.priority.child_nice(),
@@ -158,4 +194,26 @@ pub struct GovernorSnapshot {
     pub free_build_slots: usize,
     pub memory_free_ratio: Option<f64>,
     pub nice_applied: Option<i32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescope_applies_and_keeps_previous_on_error() {
+        let g = Governor::new(GovernorConfig {
+            max_cpu_cores: CpuCores::Count(2),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(g.cpus().len(), 2);
+        assert!(matches!(g.spec(), CpuCores::Count(2)));
+        g.rescope(CpuCores::Percent(100)).unwrap();
+        assert_eq!(g.cpus().len(), g.snapshot().usable_total);
+        // Invalid spec leaves the running budget untouched.
+        assert!(g.rescope(CpuCores::Count(0)).is_err());
+        assert_eq!(g.cpus().len(), g.snapshot().usable_total);
+        assert!(matches!(g.spec(), CpuCores::Percent(100)));
+    }
 }

@@ -31,7 +31,8 @@ impl CommandBuilder {
     /// Apply the full governor policy: pin + env caps + niceness.
     #[must_use]
     pub fn govern(self, governor: &Governor) -> Self {
-        self.govern_inner(governor.cpus(), governor.child_nice())
+        let cpus = governor.cpus();
+        self.govern_inner(&cpus, governor.child_nice())
     }
 
     /// Pin + env caps only (no niceness), also used by tests.

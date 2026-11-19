@@ -1,33 +1,35 @@
 # OpenChat / OpenChamber Rewrite — Architecture & Product Ideas
 
-> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, and the multi-client / directory-scoped synchronization architecture. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
+> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, multi-client / directory-scoped synchronization architecture, and native REA (Reverse Engineer Anything) clean-room reconstruction capabilities. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
 >
-> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, and enforce strict state-sync invariants across concurrent multi-client sessions.
+> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, enforce strict state-sync invariants across concurrent multi-client sessions, and integrate native binary/app reverse-engineering pipelines directly into the developer workflow.
 
 ## Contents
 
 1. [Executive overview](#1-executive-overview)
 2. [Lightweight local model bootstrap & onboarding](#2-lightweight-local-model-bootstrap--onboarding)
 3. [Autonomous skill synthesis pipeline](#3-autonomous-skill-synthesis-pipeline)
-4. [Polyglot anti-slop architecture](#4-polyglot-anti-slop-architecture)
-5. [Multi-client sync protocol & state invariants (OpenChamber-grounded)](#5-multi-client-sync-protocol--state-invariants-openchamber-grounded)
-6. [Unified orchestration lifecycle](#6-unified-orchestration-lifecycle)
-7. [Interfaces and implementation sketches](#7-interfaces-and-implementation-sketches)
-8. [OpenChat Dev Mode & small-model diagnostics offload](#8-openchat-dev-mode--small-model-diagnostics-offload)
-9. [OpenChat / OpenChamber rewrite direction](#9-openchat--openchamber-rewrite-direction)
-10. [Roadmap and integration sequence](#10-roadmap-and-integration-sequence)
-11. [Safety, failure modes, and design decisions](#11-safety-failure-modes-and-design-decisions)
-12. [References and provenance](#12-references-and-provenance)
+4. [Inbuilt REA (Reverse Engineer Anything) subsystem](#4-inbuilt-rea-reverse-engineer-anything-subsystem)
+5. [Polyglot anti-slop architecture](#5-polyglot-anti-slop-architecture)
+6. [Multi-client sync protocol & state invariants (OpenChamber-grounded)](#6-multi-client-sync-protocol--state-invariants-openchamber-grounded)
+7. [Unified orchestration lifecycle](#7-unified-orchestration-lifecycle)
+8. [Interfaces and implementation sketches](#8-interfaces-and-implementation-sketches)
+9. [OpenChat Dev Mode & small-model diagnostics offload](#9-openchat-dev-mode--small-model-diagnostics-offload)
+10. [OpenChat / OpenChamber rewrite direction](#10-openchat--openchamber-rewrite-direction)
+11. [Roadmap and integration sequence](#11-roadmap-and-integration-sequence)
+12. [Safety, failure modes, and design decisions](#12-safety-failure-modes-and-design-decisions)
+13. [References and provenance](#13-references-and-provenance)
 
 ---
 
 ## 1. Executive overview
 
-The proposal combines four complementary layers: a lightweight zero-cloud onboarding concierge, followed by three runtime anti-slop quality controls:
+The proposal combines five complementary architectural pillars: a lightweight zero-cloud onboarding concierge, an inbuilt reverse-engineering analysis subsystem (REA), followed by three runtime anti-slop quality controls:
 
 | Layer / Stage | When it acts | Primary responsibility | Reference concept |
 |---|---|---|---|
 | **0. Local Bootstrap Concierge & Diagnostic Coprocessor** | First run, workspace open, failure/incident triage | Hardware discovery, credential onboarding, local skill synthesis, log clustering & diagnostic drafting | NousResearch `hermes-agent` (`setup_beat` / local flows) |
+| **0.5 Inbuilt REA Engine** | Application / binary inspection, clean-room feature reconstruction | Decompile binaries, unpack ASAR/Electron, trace network/IPC boundaries, extract typed interfaces | `morluto/rea` (Reverse Engineer Anything) |
 | **1. Prompt Skill Injector** | Before generation and after a patch | Select project/language rules, explain the required lifecycle mode, enforce compact search/replace or unified-diff output | `miqdadbadjuber/anti-slop`-style skill and `during` / `after` rules |
 | **2. Logit Backtracking Sampler** | Inside token generation | Detect disallowed phrase continuations and retry from a cached prefix with adjusted probabilities | `sam-paech/antislop-sampler` |
 | **3. Polyglot Tree-Sitter AST Gate** | After patch construction, before file write | Inspect syntax nodes for incomplete or suspicious constructs in supported languages | `skew202/antislop` / tree-sitter-based checks |
@@ -35,6 +37,7 @@ The proposal combines four complementary layers: a lightweight zero-cloud onboar
 The controls are deliberately layered:
 
 - **The bootstrap and diagnostic coprocessor** runs entirely on a lightweight local model (1B–3B parameters or embedded runtime), eliminating cold-start API dependencies, isolating dirty stack traces from the main context, and saving cloud token quotas during setup, onboarding, and incident triage.
+- **Inbuilt REA capabilities** allow developers to point OpenChat at an arbitrary binary, Electron ASAR, mobile APK, or web service to extract concrete typed APIs and behavior evidence without manual disassembler context-switching.
 - **Prompt rules** guide intent and reduce unnecessary output, but remain probabilistic.
 - **A sampler** can suppress selected language patterns only when the inference runtime exposes token-level logits/state; ordinary hosted chat APIs may not support it.
 - **An AST gate** is deterministic over the parsed patch and can block known incomplete constructs, but is not a proof of correctness and should avoid policing ordinary application semantics as if they were universal truths.
@@ -80,6 +83,7 @@ OpenChat adopts an explicit two-tier model separation:
 │  • Layer 2: Backtracking Sampler                                       │
 │  • Layer 3: Polyglot Tree-Sitter AST Diff Gate                         │
 │  • Headless Daemon Task Runner & Tool Executor                         │
+│  • Subagent & REA Analysis Orchestrator                                │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -150,9 +154,80 @@ The synthesized skill is stored in `crates/memory` (via SQLite/sqlite-vec) and i
 
 ---
 
-## 4. Polyglot anti-slop architecture
+## 4. Inbuilt REA (Reverse Engineer Anything) subsystem
 
-### 4.1 Goals and non-goals
+### 4.1 Product concept: from observation to clean-room implementation
+
+Inspired by `morluto/rea`, OpenChat incorporates an inbuilt **Reverse Engineer Anything** engine. Rather than requiring developers to manually configure external disassemblers, network proxies, or APK unpackers, OpenChat natively exposes reverse engineering toolchains as first-class capabilities within `crates/tools` and `crates/core`.
+
+**The core workflow:**
+> *"I like how this desktop app / binary handles audio panning / real-time syncing / IPC. Inspect it, extract the evidence, and reimplement a clean-room Rust version in our repo."*
+
+```text
+Target Binary / App / Network Stream
+               │
+               ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │       crates/tools::rea (Multi-Target Discovery Hub)        │
+ │  • Static Header & Format Classifier (ELF, PE, Mach-O,      │
+ │    WASM, BEAM, PyInstaller, Deno Standalone)                │
+ │  • Electron ASAR & JS Bundle Extractor + Sourcemap Unpacker │
+ │  • Disassembler Bridge (Ghidra headless, Hopper, IDA, Kuna) │
+ │  • Network Capture Inspector (HAR, PCAP, mitmproxy dumps)   │
+ └──────────────────────────────┬──────────────────────────────┘
+                                │ Structured Evidence & Pseudocode
+                                ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                 Clean-Room Evidence Contract                │
+ │  • Behavioral Specification (Input / Output mapping)        │
+ │  • Discovered Constants, Offsets, and State Transitions    │
+ │  • Verified Interface Signature                             │
+ └──────────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │               Tier-1 LLM Synthesis & Verification          │
+ │  • Generates clean idiomatic Rust / TypeScript code         │
+ │  • Creates test suite reproducing original behavior         │
+ │  • Passes Layer 3 Tree-Sitter AST Gate before committing    │
+ └─────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Supported target analysis matrix
+
+1. **Native Binaries (x86_64, AArch64, ARM, RISC-V):**
+   - Headless bridge to Ghidra, Hopper, IDA, or Kuna decompilers.
+   - Extracts functions, strings, call graphs, cross-references, and decompiler pseudocode.
+   - Built-in static parsing of ELF layout, PE imports/certificates, DWARF compile units, and binary hardening flags (PIE, NX, RELRO, CFG) without launching a full decompiler.
+2. **JavaScript, Node.js & Electron Applications:**
+   - Unpacks `.asar` archives, recovers bundled modules, routes, IPC channels (`ipcRenderer.send`, `ipcMain.handle`), and native Node addons (`.node`).
+   - Reconstructs original TypeScript/JavaScript source trees from embedded source maps.
+3. **Managed Runtimes (.NET, JVM, Android):**
+   - CIL instruction disassembler and metadata inspector for `.NET` assemblies.
+   - Headless JADX integration for Android APK decompilation, manifest extraction, signature verification, and native library ABI inspection.
+   - IL2CPP static metadata parsing (`global-metadata.dat`) for Unity games and binaries.
+4. **Network & Protocol Captures:**
+   - Parses HTTP/WebSocket archives (HAR, SAZ) and raw packet captures (PCAP) via `tshark`/`capinfos`.
+   - Automatically derives typed OpenAPI / TypeScript definitions from observed REST/WebSocket wire traffic.
+5. **Packaged Bundles:**
+   - Deconstructs PyInstaller executables (CArchive extraction, Python version fingerprinting, bytecode extraction) and Deno compile standalone binaries.
+
+### 4.3 Clean-room reconstruction and evidence tracking
+
+To guarantee intellectual property safety and eliminate hallucinated reverse-engineering conclusions, OpenChat enforces a strict **Evidence Contract**:
+
+- **No hallucinated assumptions:** Every reconstructed function must cite the underlying decompiler pseudocode span, disassembled instruction offsets, or network packet byte ranges.
+- **Evidence Dossier:** Findings are written to a `.openchat/rea/<target-name>/` dossier containing:
+  - `EVIDENCE.md`: Concrete offsets, type structures, and trace dumps.
+  - `SPEC.md`: Clean-room behavioral description.
+  - `test_vectors.json`: Real input/output pairs observed from memory dumps or network captures.
+- **Automated Verification:** OpenChat compiles and runs tests against the generated implementation using the recorded `test_vectors.json` before proposing the patch to the workspace.
+
+---
+
+## 5. Polyglot anti-slop architecture
+
+### 5.1 Goals and non-goals
 
 **Goals**
 
@@ -169,7 +244,7 @@ The synthesized skill is stored in `crates/memory` (via SQLite/sqlite-vec) and i
 - Rewriting whole files when a compact contextual patch is sufficient.
 - Silently correcting or discarding user code when a check fails.
 
-### 4.2 Layer 1 — Prompt Skill Injector
+### 5.2 Layer 1 — Prompt Skill Injector
 
 #### Responsibilities
 
@@ -247,7 +322,7 @@ Rules for safe application:
 - Apply all files atomically where possible, or stage to temporary files and roll back the set on any error.
 - Keep the diff as the source of truth for AST checks and Dev Mode provenance.
 
-### 4.3 Layer 2 — Logit Backtracking Sampler
+### 5.3 Layer 2 — Logit Backtracking Sampler
 
 #### Why backtracking rather than token-wide bias
 
@@ -293,7 +368,7 @@ while not stop:
 
 A production implementation must preserve enough state to reproduce the prefix deterministically (or explicitly tolerate resampling differences), handle tokenizer boundary mapping, cap cache memory, and make the fallback policy explicit.
 
-### 4.4 Layer 3 — Polyglot Tree-Sitter AST Gate
+### 5.4 Layer 3 — Polyglot Tree-Sitter AST Gate
 
 The AST gate is a **pre-patch quality barrier** over changed syntax. It should parse only changed files/hunks when practical, while retaining enough surrounding context to identify enclosing statements/functions. A first release targets Python, TypeScript, JavaScript, Go, and Rust.
 
@@ -330,11 +405,11 @@ Avoid “zero false positives” as a blanket guarantee. Optimize for high signa
 
 ---
 
-## 5. Multi-client sync protocol & state invariants (OpenChamber-grounded)
+## 6. Multi-client sync protocol & state invariants (OpenChamber-grounded)
 
 OpenChamber's frontend/backend architecture pioneered a sophisticated session synchronization system across directories and spaces (`packages/ui/src/sync` and `.agents/skills/sync-state-invariants`). In OpenChat's headless Rust daemon rewrite, we adopt and formalize these state invariants to ensure seamless synchronization across CLI, Web, Telegram, and Discord clients.
 
-### 5.1 Sources of truth and authority
+### 6.1 Sources of truth and authority
 
 State must never be ambiguous or repaired ad-hoc across multiple callers. In OpenChat, every state classification has an explicit authority and boundary:
 
@@ -345,7 +420,7 @@ State must never be ambiguous or repaired ad-hoc across multiple callers. In Ope
 | **Persisted SQLite Store** (`crates/memory`) | Authoritative history | Local durable disk (WAL) | Continuity across daemon restarts; never treated as proof of current live execution. |
 | **Optimistic Shadow Tracker** (`crates/core`) | Non-authoritative shadow | In-flight turns / pending diffs | Render-continuity and sub-millisecond client echo; removed on error or overwritten on authoritative commit. |
 
-### 5.2 Core sync state invariants
+### 6.2 Core sync state invariants
 
 1. **"Failure is not empty":** Any loader whose result can replace, delete, or clear state must distinguish a failure from successful empty data. Never swallow an API or DB error into an empty list (`[]`). A failed directory reload preserves prior state and marks that directory degraded; it never silently clears sessions.
 2. **Authoritative disappearance vs deletion:** A session or file disappearance between snapshots is only treated as a deletion after an established authoritative baseline exists. Never infer deletion from the first snapshot, an empty startup state, or a partially filtered query.
@@ -354,7 +429,7 @@ State must never be ambiguous or repaired ad-hoc across multiple callers. In Ope
 5. **Never evict what is in use:** An active session, AST parse cache, or file snapshot acquired during execution cannot be evicted by memory-governor limits until the active turn commits or cancels. Capacity limits are soft targets handled during idle scans.
 6. **Fan-out avoidance:** Refresh only directories that are actively selected or explicitly named in a change event. Polling or broadcasting across unselected workspaces causes an unnecessary fan-out of background watchers and compiler processes.
 
-### 5.3 Multi-client event multiplexer
+### 6.3 Multi-client event multiplexer
 
 ```text
  ┌─────────────────────────────────────────────────────────────┐
@@ -376,9 +451,9 @@ When an event arrives at any client, optimistic UI state reconciles deterministi
 
 ---
 
-## 6. Unified orchestration lifecycle
+## 7. Unified orchestration lifecycle
 
-### 6.1 End-to-end flow
+### 7.1 End-to-end flow
 
 ```text
  User request + workspace context
@@ -426,7 +501,7 @@ When an event arrives at any client, optimistic UI state reconciles deterministi
        (drafted by small local model; user confirms)
 ```
 
-### 6.2 State machine
+### 7.2 State machine
 
 ```text
 CREATED → BOOTSTRAPPED → CONTEXT_COMPOSED → GENERATING → PATCH_PARSED → STAGED
@@ -437,7 +512,7 @@ Any stage may transition to FAILED, CANCELLED, or NEEDS_USER_INPUT.
 No rejected patch is applied. No external issue is created without confirmation.
 ```
 
-### 6.3 Structured events
+### 7.3 Structured events
 
 A shared event envelope can power Web, CLI, Telegram, and Discord clients:
 
@@ -485,7 +560,7 @@ Example rejection event:
 }
 ```
 
-### 6.4 Rust backend crate mapping (`cmspeedau/open-chat`)
+### 7.4 Rust backend crate mapping (`cmspeedau/open-chat`)
 
 In `open-chat`, these responsibilities map directly to workspace crates:
 
@@ -493,16 +568,16 @@ In `open-chat`, these responsibilities map directly to workspace crates:
 |---|---|---|
 | **Bootstrap, Sync & Triage** | `crates/session` | Manages `setup_beat`, directory child stores, monotonic sync revisions, and small-model diagnostic offloading. |
 | **Skill Index & Vector Store** | `crates/memory` | Stores synthesized `SKILL.md` contracts and project conventions using `rusqlite` + `sqlite-vec`. |
-| **Skill Synthesis & Tooling** | `crates/tools` | Runs compiler symbol extraction (`cargo doc`, `cargo check --message-format=json`) and AST sampling. |
+| **Skill Synthesis, REA & Tooling** | `crates/tools` | Houses compiler symbol extraction, decompiler bridges (Ghidra, Hopper, IDA), ASAR unpackers, and APK analyzers. |
 | **AST Inspection & Patching** | `crates/core` | Parses search/replace diffs in-memory, executes Tree-sitter queries, manages atomic commits and shadow updates. |
 | **Inference Control** | `crates/governor` | Manages local backtracking sampler, concurrency semaphores, process priority. |
 | **Workspace File Watcher** | `crates/watcher` | Employs debounced `notify` to track file modifications and invalidate AST caches. |
 
 ---
 
-## 7. Interfaces and implementation sketches
+## 8. Interfaces and implementation sketches
 
-### 7.1 Rust AST gate sketch (`crates/core`)
+### 8.1 Rust AST gate sketch (`crates/core`)
 
 ```rust
 use std::path::Path;
@@ -537,7 +612,40 @@ pub trait AstGate: Send + Sync {
 }
 ```
 
-### 7.2 TypeScript composition and diff-merger sketch
+### 8.2 Inbuilt REA tool contract sketch (`crates/tools::rea`)
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TargetKind {
+    NativeBinary { arch: String, format: String },
+    ElectronAsar { app_name: String },
+    DotNetAssembly,
+    AndroidApk { package_id: String },
+    NetworkCapture { pcap_or_har: PathBuf },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceTrace {
+    pub source_location: String,
+    pub pseudocode: Option<String>,
+    pub assembly_bytes: Option<Vec<u8>>,
+    pub observed_io: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaInvestigationReport {
+    pub target: TargetKind,
+    pub feature_name: String,
+    pub evidence: Vec<EvidenceTrace>,
+    pub clean_room_spec: String,
+    pub proposed_rust_signature: String,
+}
+```
+
+### 8.3 TypeScript composition and diff-merger sketch
 
 The TypeScript layer can orchestrate a native Tree-sitter/Rust service or a WASM parser package. Keep the gate API stable and return structured data regardless of implementation language.
 
@@ -584,7 +692,7 @@ export async function validatePatch(
     staged.push({ path: change.path, expectedHash: snapshot.hash, text: proposed });
   }
 
-  for (const file of staged) findings.push(...await gate.inspect(file.path, file.text));
+  for (file of staged) findings.push(...await gate.inspect(file.path, file.text));
   if (findings.some(f => f.severity === "block")) return { ok: false, findings };
 
   await workspace.commitAtomically(staged);
@@ -596,9 +704,9 @@ export async function validatePatch(
 
 ---
 
-## 8. OpenChat Dev Mode & small-model diagnostics offload
+## 9. OpenChat Dev Mode & small-model diagnostics offload
 
-### 8.1 Product concept & main-model offload
+### 9.1 Product concept & main-model offload
 
 **Dev Mode** is an opt-in, self-monitoring diagnostic assistant within OpenChat. When an operational failure occurs—such as a stream crash, recurring tool failure, or repeated AST gate rejection—**the main LLM does not consume its own context and cloud token budget to troubleshoot itself.**
 
@@ -636,7 +744,7 @@ Instead, OpenChat **offloads diagnostics to the small local model (Tier 0)**:
 2. **Zero token cost:** Incident analysis and log clustering do not require high-end frontier reasoning; a fast 1.5B or 3B local model handles trace normalization, clustering, and issue drafting entirely offline at zero cost.
 3. **Survives cloud API disconnects:** If the failure is caused by an expired API key, network timeout, or provider 500 error, the main cloud model cannot diagnose the issue because it is unreachable. The local small model stays operational and diagnoses the outage locally.
 
-### 8.2 Diagnostic sources and collection
+### 9.2 Diagnostic sources and collection
 
 Initial signals:
 
@@ -668,7 +776,7 @@ interface DiagnosticEvent {
 }
 ```
 
-### 8.3 Root-cause analysis and issue draft generation (Local Coprocessor)
+### 9.3 Root-cause analysis and issue draft generation (Local Coprocessor)
 
 The small local diagnostic analyzer receives a **curated, bounded incident bundle**, not unrestricted access to local files. It:
 
@@ -681,7 +789,7 @@ The small local diagnostic analyzer receives a **curated, bounded incident bundl
 
 The output remains a **draft**. It must not select an arbitrary repository, infer a GitHub owner/repo, or include unsanitized data. The issue target must be selected by the user or resolved from an explicit workspace-to-repository configuration shown in the confirmation UI.
 
-### 8.4 User-confirmation card and workflow
+### 9.4 User-confirmation card and workflow
 
 Example Web UI card:
 
@@ -710,7 +818,7 @@ Confirmation requirements:
 - If the draft includes any source excerpt or user content, call it out and require explicit inclusion.
 - Save no GitHub token in the issue body or diagnostic bundle. Use the configured GitHub credential path with least privilege.
 
-### 8.5 GitHub Issue Dispatcher
+### 9.5 GitHub Issue Dispatcher
 
 The dispatcher may use the GitHub API directly or a GitHub MCP/connected-service adapter. It should expose a narrow operation such as `createIssue`, not a general-purpose “act on repository” capability.
 
@@ -748,7 +856,7 @@ Guardrails:
 - If MCP is selected, keep approval gating in OpenChat and pass only the approved payload to the connector.
 - Respect repository policy and rate limits; provide “copy draft” fallback if dispatch is unavailable.
 
-### 8.6 Dev Mode event lifecycle
+### 9.6 Dev Mode event lifecycle
 
 ```text
 runtime event → normalize → redact → bounded local store → deduplicate/cluster
@@ -759,9 +867,9 @@ runtime event → normalize → redact → bounded local store → deduplicate/c
 
 ---
 
-## 9. OpenChat / OpenChamber rewrite direction
+## 10. OpenChat / OpenChamber rewrite direction
 
-### 9.1 Core product shape
+### 10.1 Core product shape
 
 OpenChat is conceived as a next-generation agentic workspace and rewrite inspired by OpenChamber, emphasizing a **headless, fast core daemon** rather than a UI-bound agent process. A single execution core can serve lightweight clients:
 
@@ -772,7 +880,7 @@ OpenChat is conceived as a next-generation agentic workspace and rewrite inspire
 
 The engine/client separation is architectural: clients present state and collect consent; the daemon owns sessions, tools, memory, policy, event streams, and task supervision.
 
-### 9.2 Native scoped memory
+### 10.2 Native scoped memory
 
 A local embedded memory system addresses cross-session amnesia without stuffing every past conversation into the prompt:
 
@@ -794,7 +902,7 @@ memory_forget({ scope, key })
 
 Memory should be inspectable, editable, scoped, and deletable. Retrieval must report which memories were injected and their token cost.
 
-### 9.3 Observable skill system and auto-binding
+### 10.3 Observable skill system and auto-binding
 
 Skills should be modular, indexed, and loaded only when relevant. A registry can match `SKILL.md` metadata against language, manifest file, glob, framework, task intent, and lifecycle mode. It should support:
 
@@ -805,7 +913,7 @@ Skills should be modular, indexed, and loaded only when relevant. A registry can
 - Visible badges across clients, including active skill names, modes, and token footprints.
 - Skill-gap prompting when a detected language/framework has no matching skill; bootstrap/import only after user consent.
 
-### 9.4 Context compositor and output discipline
+### 10.4 Context compositor and output discipline
 
 Before model invocation, a deterministic compositor combines:
 
@@ -816,7 +924,7 @@ request + scoped memory + selected skill rules + tool schemas + relevant history
 
 It should expose per-turn token counts for user/context, tools, memories, and skills. To reduce output cost and latency, code edits default to compact exact patches, not full-file rewrites or conversational narration.
 
-### 9.5 Reliability and resource governance
+### 10.5 Reliability and resource governance
 
 The supplied rewrite notes also point to reliability features that complement anti-slop and Dev Mode:
 
@@ -832,7 +940,7 @@ These features should be centrally orchestrated by the daemon so multiple client
 
 ---
 
-## 10. Roadmap and integration sequence
+## 11. Roadmap and integration sequence
 
 ### Phase 0 — Contracts, measurement & bootstrap concierge
 
@@ -855,27 +963,33 @@ These features should be centrally orchestrated by the daemon so multiple client
 - Integrate compact patch generation and bounded repair retries.
 - Add context/token inspector and per-rule false-positive/suppression telemetry.
 
-### Phase 3 — Sampler integration
+### Phase 3 — Inbuilt REA (Reverse Engineering) toolchain
+
+- Implement `crates/tools::rea` with static format detectors (ELF, PE, Mach-O, ASAR, APK, HAR).
+- Add headless bridges for disassemblers (Ghidra, Hopper, IDA, Kuna).
+- Introduce clean-room Evidence Contracts (`EVIDENCE.md` and test-vector generation) to verify reverse-engineered implementations before AST gating.
+
+### Phase 4 — Sampler integration
 
 - Implement the sampler adapter in `crates/governor` for local inference runtimes exposing logits and rewindable state.
 - Support phrase rules first; add regex bans only with explicit non-streaming or buffered-stream semantics.
 - Mark unsupported providers clearly and preserve the same patch/AST checks for all providers.
 - Tune project-owned phrase lists and strengths; maintain an allowlist and quality regression corpus.
 
-### Phase 4 — Daemon, memory, sync invariants & Dev Mode foundation
+### Phase 5 — Daemon, memory, sync invariants & Dev Mode foundation
 
 - Build daemon session lifecycle (`crates/session`), multi-client sync protocol, directory child stores, monotonic revisions, and memory scopes (`crates/memory`).
 - Offload incident clustering, stack-trace normalization, and failure root-cause analysis to Tier-0 local model.
 - Add operational diagnostics for AST rejections, tool failures, stream parse errors, and subagent timeouts.
 - Deliver draft-only root-cause summaries with confidence/evidence boundaries without polluting main LLM context.
 
-### Phase 5 — Confirmed GitHub dispatch and multi-client workflows
+### Phase 6 — Confirmed GitHub dispatch and multi-client workflows
 
 - Implement review/edit card and explicit approval object bound to draft revision/repository.
 - Add API/MCP dispatcher with least-privilege access, idempotency, and a copy-only fallback.
 - Surface the same diagnostic and approval workflow in Web first, then Telegram/Discord using inline confirmation UI compatible with each client.
 
-### Phase 6 — Scale and polish
+### Phase 7 — Scale and polish
 
 - Add further language adapters and semantic skill routing.
 - Add multi-agent resource governor, shared watcher (`crates/watcher`), build queue, reconnect/replay semantics, and virtualized long-session UI.
@@ -883,27 +997,28 @@ These features should be centrally orchestrated by the daemon so multiple client
 
 ---
 
-## 11. Safety, failure modes, and design decisions
+## 12. Safety, failure modes, and design decisions
 
-### 11.1 Enforcement boundaries
+### 12.1 Enforcement boundaries
 
 | Capability | What it can enforce | Important limitation |
 |---|---|---|
 | Bootstrap concierge & Diagnostic coprocessor | Zero-cost setup, hardware sizing, manifest detection, trace clustering & draft issue generation | Limited reasoning capability compared to frontier models; restricted to onboarding beats and structured diagnostic summarization. |
+| REA Subsystem | Ground-truth behavioral evidence from binaries, ASAR, APK, and network traces | Reverse-engineering outputs require clean-room validation; subject to local tool availability (Ghidra/Hopper/JDK). |
 | Prompt injector | Output format, preferred practices, selected project rules | Model may ignore or misunderstand instructions. |
 | Backtracking sampler | Selected phrase/token continuations in a hook-enabled generator | Requires logits and rewind state; many hosted APIs do not expose these. |
 | AST gate | Syntax-aware detection of configured constructs in changed content | Does not prove semantic correctness, safe behavior, or successful compilation. |
 | Compiler/tests | Project-defined correctness checks | Can be slow, incomplete, environment-dependent, or unavailable. |
 | Dev Mode analysis (small model) | Summarize and hypothesize from selected diagnostics | AI analysis can be wrong; issue draft must be verified and approved by user. |
 
-### 11.2 False positives and exceptions
+### 12.2 False positives and exceptions
 
 - Keep `block`, `warning`, and `info` separate.
 - Provide per-project profiles (core/standard/strict) and explicit allowlists with reason/expiry where useful.
 - Default blockers should be narrow and evidence-based; an empty `catch` or `pass` should not be universally equivalent to a defect.
 - Avoid duplicating routine style checks already handled by ESLint, Clippy, formatters, or project linters unless there is a deliberate override.
 
-### 11.3 Privacy and security
+### 12.3 Privacy and security
 
 - Diagnostics are local-first and bounded. Redact secrets before storage/export; never include environment dumps or credentials.
 - Show exact diagnostic fields proposed for external transmission.
@@ -914,10 +1029,11 @@ These features should be centrally orchestrated by the daemon so multiple client
 
 ---
 
-## 12. References and provenance
+## 13. References and provenance
 
 The uploaded notes identify these reference projects and concepts:
 
+- [`morluto/rea`](https://github.com/morluto/rea) — Reverse Engineer Anything: unified agent MCP/tools for native binaries, JavaScript/Electron ASAR, mobile APKs, network traces, and clean-room reconstruction.
 - [`openchamber/openchamber`](https://github.com/openchamber/openchamber) — multi-client sync protocol, directory child stores, session reconciliation invariants (`sync-state-invariants`), and inspiration for the headless rewrite.
 - [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) — two-tier architecture, small model onboarding flow, and `setup_beat` interactive card orchestration.
 - [`miqdadbadjuber/anti-slop`](https://github.com/miqdadbadjuber/anti-slop) — lifecycle-aware prompt/skill constraints and anti-slop concepts.

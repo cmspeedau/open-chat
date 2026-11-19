@@ -1,16 +1,16 @@
 # OpenChat / OpenChamber Rewrite — Architecture & Product Ideas
 
-> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, multi-client / directory-scoped synchronization architecture, native REA (Reverse Engineer Anything) clean-room reconstruction capabilities, and an integrated REA toggle & tool installer manager. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
+> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, multi-client / directory-scoped synchronization architecture, native REA (Reverse Engineer Anything) clean-room reconstruction capabilities, and an integrated REA toggle & tool installer manager grounded in the `craft-anything` architecture. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
 >
-> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, enforce strict state-sync invariants across concurrent multi-client sessions, integrate native binary/app reverse-engineering pipelines directly into the developer workflow, and provide seamless, zero-friction toggle switches and dependency installers with sandbox isolation.
+> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, enforce strict state-sync invariants across concurrent multi-client sessions, integrate native binary/app reverse-engineering pipelines directly into the developer workflow, and provide seamless, zero-friction toggle switches, Clean Room vs. Deep modes, and automated dependency installers with a unified CLI/desktop `doctor` system.
 
 ## Contents
 
 1. [Executive overview](#1-executive-overview)
 2. [Lightweight local model bootstrap & onboarding](#2-lightweight-local-model-bootstrap--onboarding)
 3. [Autonomous skill synthesis pipeline](#3-autonomous-skill-synthesis-pipeline)
-4. [Inbuilt REA (Reverse Engineer Anything) subsystem](#4-inbuilt-rea-reverse-engineer-anything-subsystem)
-5. [REA Settings Page & Automated Tool Installer Manager](#5-rea-settings-page--automated-tool-installer-manager)
+4. [Inbuilt REA Subsystem & Craft-Anything Architecture](#4-inbuilt-rea-subsystem--craft-anything-architecture)
+5. [REA Settings Page, Clean Room vs. Deep Mode & Tool Installer](#5-rea-settings-page-clean-room-vs-deep-mode--tool-installer)
 6. [Polyglot anti-slop architecture](#6-polyglot-anti-slop-architecture)
 7. [Multi-client sync protocol & state invariants (OpenChamber-grounded)](#7-multi-client-sync-protocol--state-invariants-openchamber-grounded)
 8. [Unified orchestration lifecycle](#8-unified-orchestration-lifecycle)
@@ -25,12 +25,12 @@
 
 ## 1. Executive overview
 
-The proposal combines five complementary architectural pillars: a lightweight zero-cloud onboarding concierge, an inbuilt reverse-engineering analysis subsystem (REA) complete with a modular toggle and tool management page, followed by three runtime anti-slop quality controls:
+The proposal combines five complementary architectural pillars: a lightweight zero-cloud onboarding concierge, an inbuilt reverse-engineering analysis subsystem (REA) complete with a modular toggle and tool management page patterned after `craft-anything`, followed by three runtime anti-slop quality controls:
 
 | Layer / Stage | When it acts | Primary responsibility | Reference concept |
 |---|---|---|---|
-| **0. Local Bootstrap Concrocessor & Diagnostic Coprocessor** | First run, workspace open, failure/incident triage | Hardware discovery, credential onboarding, local skill synthesis, log clustering & diagnostic drafting | NousResearch `hermes-agent` (`setup_beat` / local flows) |
-| **0.5 Inbuilt REA Engine & Tool Installer** | Binary inspection, clean-room feature reconstruction, settings management | Decompile binaries, unpack ASAR/Electron, trace network/IPC boundaries, manage external decompiler toolchains via toggle | `morluto/rea` (Reverse Engineer Anything) |
+| **0. Local Bootstrap Coprocessor & Diagnostic Engine** | First run, workspace open, failure/incident triage | Hardware discovery, credential onboarding, local skill synthesis, log clustering & diagnostic drafting | NousResearch `hermes-agent` (`setup_beat` / local flows) |
+| **0.5 Inbuilt REA Engine & Tool Installer** | Binary inspection, clean-room feature reconstruction, settings management | Decompile binaries, unpack ASAR/Electron, trace network/IPC boundaries, manage external decompiler toolchains via toggle | `morluto/rea` & `storytold/craft-anything` |
 | **1. Prompt Skill Injector** | Before generation and after a patch | Select project/language rules, explain the required lifecycle mode, enforce compact search/replace or unified-diff output | `miqdadbadjuber/anti-slop`-style skill and `during` / `after` rules |
 | **2. Logit Backtracking Sampler** | Inside token generation | Detect disallowed phrase continuations and retry from a cached prefix with adjusted probabilities | `sam-paech/antislop-sampler` |
 | **3. Polyglot Tree-Sitter AST Gate** | After patch construction, before file write | Inspect syntax nodes for incomplete or suspicious constructs in supported languages | `skew202/antislop` / tree-sitter-based checks |
@@ -38,15 +38,13 @@ The proposal combines five complementary architectural pillars: a lightweight ze
 The controls are deliberately layered:
 
 - **The bootstrap and diagnostic coprocessor** runs entirely on a lightweight local model (1B–3B parameters or embedded runtime), eliminating cold-start API dependencies, isolating dirty stack traces from the main context, and saving cloud token quotas during setup, onboarding, and incident triage.
-- **Inbuilt REA capabilities** allow developers to point OpenChat at an arbitrary binary, Electron ASAR, mobile APK, or web service to extract concrete typed APIs and behavior evidence without manual disassembler context-switching.
-- **REA Toggle Switch & Settings Manager** allows users to enable or disable reverse-engineering toolchains on demand, verify prerequisite external tools (Ghidra, Hopper, JADX, Wireshark/tshark), and install missing dependencies with a single click.
+- **Inbuilt REA capabilities (Craft-Anything style)** allow developers to point OpenChat at any website, desktop app, mobile APK, game, or native binary, study it with real inspection tools, build a new version in the user\'s requested language/stack, and verify the result against the original.
+- **Clean Room vs. Deep Mode & Tool Manager:** Offers a strict dual-mode toggle switch. In **Clean Room** mode, internal proprietary code/files are never read; the builder works strictly from outward observable behavior, UI screenshots, and public contracts. In **Deep Mode**, the full 300+ inspection tool suite (including Ghidra headless, JADX, and AST decoders) is unlocked. Missing dependencies are checked and installed via an integrated `doctor` command and UI manager.
 - **Prompt rules** guide intent and reduce unnecessary output, but remain probabilistic.
 - **A sampler** can suppress selected language patterns only when the inference runtime exposes token-level logits/state; ordinary hosted chat APIs may not support it.
 - **An AST gate** is deterministic over the parsed patch and can block known incomplete constructs, but is not a proof of correctness and should avoid policing ordinary application semantics as if they were universal truths.
 - **Patch application** is transactional: validate paths and base versions, apply only the requested change, run syntax/hygiene checks, then commit to the workspace or return a structured rejection for repair.
 - **State synchronization** guarantees multi-client convergence (CLI, Web, Telegram, Discord) with directory-scoped authority, optimistic update shadows, and monotonic write revisions.
-
-The larger product concept is a **headless OpenChat daemon** with observable skill composition, persistent scoped memory, multi-client interfaces, resource governance, and a user-confirmed **Dev Mode** that turns diagnostic events into reviewable GitHub issue drafts.
 
 ---
 
@@ -96,9 +94,9 @@ Modeled after the `setup_beat` pattern in `hermes-agent`, onboarding in OpenChat
 
 1. **`hardware` beat:** Probes local compute resources (available RAM, VRAM, Apple Metal / CUDA presence) and recommends local model sizing or cloud gateway usage.
 2. **`connectors` beat:** Fingerprints local developer utilities (Git, GitHub CLI `gh`, Docker, Ripgrep, Tree-sitter parsers) and displays interactive cards to enable or link them.
-3. **`credentials` beat:** Securely collects and encrypts model provider keys or local endpoint ports directly into the daemon's local store.
+3. **`credentials` beat:** Securely collects and encrypts model provider keys or local endpoint ports directly into the daemon\'s local store.
 4. **`workspace` beat:** Discovers project manifests (`Cargo.toml`, `pyproject.toml`, `package.json`, `go.mod`) in target folders and seeds project memory.
-5. **`rea_tools` beat (Optional):** Detects if the user wants reverse-engineering capabilities enabled; scans for Ghidra, JADX, and network sniffers, providing instant install options.
+5. **`rea_tools` beat (Optional):** Detects if the user wants reverse-engineering capabilities enabled; runs the built-in `doctor` check for Ghidra, JADX, and network sniffers, providing instant install options.
 6. **`done` beat:** Transitions the session from onboarding mode to the standard interactive coding daemon.
 
 Crucially, cards are UI-agnostic: the daemon emits structured card payloads over WebSocket or IPC, allowing Web, TUI, and desktop frontends to render native pickers and skip controls.
@@ -112,11 +110,11 @@ Crucially, cards are UI-agnostic: the daemon emits structured card payloads over
 When an agent needs a skill for a newly detected language or framework, standard practice has been to scrape official documentation sites or search results. This produces low-quality "prompt slop":
 - **Documentation sites prioritize beginners:** Tutorials contain hundreds of tokens of introductory marketing prose and toy `hello world` snippets.
 - **Omission of production invariants:** Beginner documentation frequently relies on simplified, sloppy idioms (e.g., blanket `.unwrap()` in Rust or bare `except:` in Python) for brevity.
-- **Context bloat:** Feeding hundreds of lines of documentation markdown into prompt context dilutes the model's focus on project-specific architecture.
+- **Context bloat:** Feeding hundreds of lines of documentation markdown into prompt context dilutes the model\'s focus on project-specific architecture.
 
 ### 3.2 The repository-first synthesis engine
 
-OpenChat synthesizes new skills by grounding itself **in the local project's ground truth first**, using compiler signatures and symbol dumps rather than web tutorials:
+OpenChat synthesizes new skills by grounding itself **in the local project\'s ground truth first**, using compiler signatures and symbol dumps rather than web tutorials:
 
 ```text
                       Trigger: Unindexed Stack Detected
@@ -158,166 +156,152 @@ The synthesized skill is stored in `crates/memory` (via SQLite/sqlite-vec) and i
 
 ---
 
-## 4. Inbuilt REA (Reverse Engineer Anything) subsystem
+## 4. Inbuilt REA Subsystem & Craft-Anything Architecture
 
-### 4.1 Product concept: from observation to clean-room implementation
+### 4.1 Product concept: Study → Build → Check → Ready
 
-Inspired by `morluto/rea`, OpenChat incorporates an inbuilt **Reverse Engineer Anything** engine. Rather than requiring developers to manually configure external disassemblers, network proxies, or APK unpackers, OpenChat natively exposes reverse engineering toolchains as first-class capabilities within `crates/tools` and `crates/core`.
-
-**The core workflow:**
-> *"I like how this desktop app / binary handles audio panning / real-time syncing / IPC. Inspect it, extract the evidence, and reimplement a clean-room Rust version in our repo."*
+Adopting the architectural model established by `storytold/craft-anything` (and enriched by `morluto/rea`), OpenChat implements a full-lifecycle reverse engineering engine that turns black-box software into clean-room, verified implementations:
 
 ```text
-Target Binary / App / Network Stream
-               │
-               ▼
- ┌─────────────────────────────────────────────────────────────┐
- │       crates/tools::rea (Multi-Target Discovery Hub)        │
- │  • Static Header & Format Classifier (ELF, PE, Mach-O,      │
- │    WASM, BEAM, PyInstaller, Deno Standalone)                │
- │  • Electron ASAR & JS Bundle Extractor + Sourcemap Unpacker │
- │  • Disassembler Bridge (Ghidra headless, Hopper, IDA, Kuna) │
- │  • Network Capture Inspector (HAR, PCAP, mitmproxy dumps)   │
- └──────────────────────────────┬──────────────────────────────┘
-                                │ Structured Evidence & Pseudocode
-                                ▼
- ┌─────────────────────────────────────────────────────────────┐
- │                 Clean-Room Evidence Contract                │
- │  • Behavioral Specification (Input / Output mapping)        │
- │  • Discovered Constants, Offsets, and State Transitions    │
- │  • Verified Interface Signature                             │
- └──────────────────────────────┬──────────────────────────────┘
-                                │
-                                ▼
- ┌─────────────────────────────────────────────────────────────┐
- │               Tier-1 LLM Synthesis & Verification          │
- │  • Generates clean idiomatic Rust / TypeScript code         │
- │  • Creates test suite reproducing original behavior         │
- │  • Passes Layer 3 Tree-Sitter AST Gate before committing    │
- └──────────────────────────────┘
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   1. STUDY   │ ──► │   2. BUILD   │ ──► │   3. CHECK   │ ──► │   4. READY   │
+│ Real tools   │     │ Coding agent │     │ Compare with │     │ Open, test,  │
+│ examine the  │     │ generates    │     │ original;    │     │ play or      │
+│ target & log │     │ clean-room   │     │ score visual │     │ refine with  │
+│ evidence     │     │ codebase     │     │ & logic diff │     │ conversation │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
-### 4.2 Supported target analysis matrix
+1. **Study:** Inspects the original target using real native inspection tools—layout at multiple breakpoints, API routes, IPC boundaries, decompiled functions, and runtime network calls—recording findings in a tamper-proof evidence ledger (`investigation.cany/`).
+2. **Build:** A coding agent (Claude Code, Grok, Copilot, or local OpenChat executor via ACP/MCP) synthesizes an entirely new project in the stack requested by the user (e.g. Rust, TypeScript, Godot, React).
+3. **Check:** Compares the build against the original target. For websites: responsive DOM and screenshot diffs at 3 viewport widths. For apps/games: execution runs, state machine transitions, and recorded test vectors.
+4. **Ready:** Interactive launch, live preview, or play-test card in the client, with an iterative prompt box for subsequent refinements.
 
-1. **Native Binaries (x86_64, AArch64, ARM, RISC-V):**
+### 4.2 Clean Room vs. Deep Mode: Strict Operational Boundary
+
+Directly following `craft-anything`, OpenChat establishes a fundamental mode switch:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                        MODE SELECTION TOGGLE                           │
+│                                                                        │
+│  (•) Clean Room (Default & Recommended)                                │
+│      • Nothing inside the original program or repo is read.            │
+│      • No decompiler, no byte extraction, no proprietary source peek.  │
+│      • Analyzes outward behavior: visual screenshots, responsive DOM,  │
+│        public REST/WebSocket specs, user-provided reference images.    │
+│      • Tools that attempt to decompile or look inside are refused      │
+│        with a prompt instructing how to enable Deep Mode.              │
+│                                                              │
+│  ( ) Deep Mode (Private / Explicit Opt-In)                             │
+│      • Unlocks the entire 300+ tool inspection suite.                  │
+│      • Binary decompilation via native Rust decoders or Ghidra.        │
+│      • Electron .asar unpacking, IL2CPP metadata parsing.              │
+│      • In-depth pseudocode and cross-reference extraction.             │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 Target Analysis Matrix (`crates/tools::rea`)
+
+Like `craft-anything`\'s 320-tool suite, OpenChat provides dual-mode tool implementations where every tool functions as both a daemon MCP tool and a standalone CLI subcommand:
+
+1. **Websites & Web Apps:**
+   - Playwright/headless Chrome capture at 3 screen widths (desktop 1440px, tablet 768px, mobile 375px).
+   - Layout metrics, color palette, typography extraction, and public network call capture.
+2. **Native Binaries (x86_64, AArch64, ARM, RISC-V):**
    - Headless bridge to Ghidra, Hopper, IDA, or Kuna decompilers.
-   - Extracts functions, strings, call graphs, cross-references, and decompiler pseudocode.
-   - Built-in static parsing of ELF layout, PE imports/certificates, DWARF compile units, and binary hardening flags (PIE, NX, RELRO, CFG) without launching a full decompiler.
-2. **JavaScript, Node.js & Electron Applications:**
-   - Unpacks `.asar` archives, recovers bundled modules, routes, IPC channels (`ipcRenderer.send`, `ipcMain.handle`), and native Node addons (`.node`).
-   - Reconstructs original TypeScript/JavaScript source trees from embedded source maps.
-3. **Managed Runtimes (.NET, JVM, Android):**
+   - Built-in pure-Rust parsers (`goblin`, `object`) for ELF sections, PE imports, and Mach-O signatures without external decompiler overhead.
+3. **JavaScript & Electron Applications:**
+   - Built-in zero-dependency `.asar` archive unpacker (`crates/tools::rea::asar`).
+   - Source-map reconstructor to recover original TypeScript/JavaScript source trees.
+4. **Managed Runtimes (.NET, JVM, Android):**
    - CIL instruction disassembler and metadata inspector for `.NET` assemblies.
-   - Headless JADX integration for Android APK decompilation, manifest extraction, signature verification, and native library ABI inspection.
-   - IL2CPP static metadata parsing (`global-metadata.dat`) for Unity games and binaries.
-4. **Network & Protocol Captures:**
-   - Parses HTTP/WebSocket archives (HAR, SAZ) and raw packet captures (PCAP) via `tshark`/`capinfos`.
-   - Automatically derives typed OpenAPI / TypeScript definitions from observed REST/WebSocket wire traffic.
-5. **Packaged Bundles:**
-   - Deconstructs PyInstaller executables (CArchive extraction, Python version fingerprinting, bytecode extraction) and Deno compile standalone binaries.
-
-### 4.3 Clean-room reconstruction and evidence tracking
-
-To guarantee intellectual property safety and eliminate hallucinated reverse-engineering conclusions, OpenChat enforces a strict **Evidence Contract**:
-
-- **No hallucinated assumptions:** Every reconstructed function must cite the underlying decompiler pseudocode span, disassembled instruction offsets, or network packet byte ranges.
-- **Evidence Dossier:** Findings are written to a `.openchat/rea/<target-name>/` dossier containing:
-  - `EVIDENCE.md`: Concrete offsets, type structures, and trace dumps.
-  - `SPEC.md`: Clean-room behavioral description.
-  - `test_vectors.json`: Real input/output pairs observed from memory dumps or network captures.
-- **Automated Verification:** OpenChat compiles and runs tests against the generated implementation using the recorded `test_vectors.json` before proposing the patch to the workspace.
+   - Headless JADX integration for Android APK decompilation and manifest analysis.
+   - Unity IL2CPP static metadata extractor (`global-metadata.dat` v24–39).
+5. **Game Runtimes & Recreations:**
+   - Extracts assets, sprite sheets, audio clips, and state logic to recreate gameplay in Godot, Bevy, or WebGL.
 
 ---
 
-## 5. REA Settings Page & Automated Tool Installer Manager
+## 5. REA Settings Page, Clean Room vs. Deep Mode & Tool Installer
 
-### 5.1 Why a dedicated REA toggle & installer are necessary
+### 5.1 Architecture: Built Like `craft-anything`
 
-Reverse engineering tools (Ghidra, JDK, JADX, Wireshark/tshark, Hopper, Node ASAR) are heavy, have system-level dependencies (Java runtimes, native packet sniffers), and are not needed by all users. 
+Following `craft-anything` and `craft-anything-cli`, OpenChat integrates tool health checks, package management, and mode selection into a unified system:
 
-To maintain OpenChat's lightweight footprint:
-1. **Zero bloat by default:** REA tools and subagent hooks remain inert until explicitly toggled on by the user.
-2. **Granular capability activation:** Users can toggle on lightweight static inspection (zero dependencies) while keeping heavy binary decompilers disabled.
-3. **One-click managed installation:** Users shouldn't have to spend hours setting up environment variables (`GHIDRA_INSTALL_PATH`, `JAVA_HOME`). The settings page provides automated checks and one-click installation via system package managers or isolated sandboxed downloads.
+1. **`openchat doctor` CLI & Settings Dashboard:** Inspects local coding agents, tool installations, system runtimes, and engine capabilities.
+2. **One-Click Automated Installers:** Installs missing dependencies (JDK 21, Ghidra, JADX, Wireshark/tshark) via host package managers (`brew`, `apt`, `winget`, `choco`) or managed isolated GitHub binary downloads.
+3. **Structured Project Dossier:** Every reverse-engineered build creates a standardized project folder:
+   - `craft.json`: Request prompt, target URI, mode (`clean-room` | `deep`), status, and history.
+   - `capture/`: Recorded screenshots, HAR network traces, and extracted assets.
+   - `app/`: Generated clean-room source code.
+   - `checks/`: Responsive visual diffs, similarity scores, and test vector results.
+   - `investigation.cany/`: Structured evidence records with confidence and limitations.
+   - `inbox/`: Questions and approval cards waiting for user decision.
 
-### 5.2 Settings Page UI / UX Architecture
-
-The Web and Desktop clients expose a dedicated **Settings → Reverse Engineering (REA)** panel:
+### 5.2 Settings UI Layout
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  Settings > Reverse Engineering & Decompilation (REA)                          │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  Enable REA Subsystem                                             [ Toggle: ON ]│
-│  Allows OpenChat to analyze binaries, unpack Electron apps, and reverse code.   │
+│  REA Operating Mode:                                                            │
+│  [ (•) Clean Room (Outward behavior only)   ( ) Deep (Full decompiler suite) ]  │
 │                                                                                 │
-│  ── Core Capabilities ───────────────────────────────────────────────────────── │
+│  ── Core Engines & Diagnostic Health (openchat doctor) ──────────────────────── │
 │                                                                                 │
-│  [x] Static & Format Analysis (ELF, PE, Mach-O, ASAR, HAR)       [ Pure Rust: ✓]│
-│      Instant zero-dependency header, string, and metadata inspection.           │
+│  Pure-Rust Engine (300 built-in tools)                             [ Ready     ]│
+│  • Status: Active (ELF, PE, Mach-O, ASAR, HAR, Web)               [ OK ]        │
 │                                                                                 │
-│  ── External Decompilers & Disassemblers ────────────────────────────────────── │
-│                                                                                 │
-│  Ghidra Decompiler Engine (NSA Ghidra headless)                    [ Installed  ]│
+│  Ghidra Decompiler Engine (NSA Ghidra headless)                    [ Installed ]│
 │  • Status: v11.1.2 detected at /opt/ghidra                        [ Recheck ]   │
-│  • Java Runtime: OpenJDK 21 (OK)                                  [ Configure ] │
+│  • Java Runtime: OpenJDK 21 detected                              [ Configure ] │
 │                                                                                 │
-│  JADX (Android APK & Dex Decompiler)                              [ Missing    ]│
+│  JADX (Android APK & Dex Decompiler)                              [ Missing   ]│
 │  • Status: Not found in PATH                                      [ Install ⬇ ] │
-│  • Action: Install via package manager / standalone zip                         │
+│  • Action: Install to ~/.openchat/tools/rea/bin/jadx                            │
 │                                                                                 │
-│  Tshark / Wireshark (Network Protocol Inspector)                   [ Installed  ]│
+│  Tshark / Wireshark (Network Traffic Inspector)                   [ Installed ]│
 │  • Status: v4.2.4 detected at /usr/bin/tshark                     [ Recheck ]   │
 │                                                                                 │
-│  Hopper Disassembler Bridge                                       [ Not Found  ]│
-│  • Status: Optional macOS bridge                                  [ Browse... ] │
+│  ── Coding Agent Connections ────────────────────────────────────────────────── │
 │                                                                                 │
-│  ── Sandboxing & Resource Limits ────────────────────────────────────────────── │
+│  Claude Code CLI                                                  [ Connected ]│
+│  GitHub Copilot CLI (via ACP)                                     [ Connected ]│
+│  Grok Build (via ACP)                                             [ Sign in ]   │
 │                                                                                 │
-│  Max Decompilation Time Limit: [ 120s ]                                         │
-│  Max Memory per Worker:       [ 4096 MB ]                                       │
-│  Decompiler Output Isolation:  [x] Run in isolated container / restricted unshare│
-│                                                                                 │
-│  [ Save Changes ]                                   [ Run Health Diagnostics ]  │
+│  [ Save Settings ]                                [ Run Doctor Diagnostics ]    │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.3 Automated Tool Installer Matrix (`crates/tools::rea::installer`)
 
-The headless daemon manages tool resolution across OS platforms:
-
-| Tool | Category | Detection Probe | Auto-Install Provider | Sandbox / Isolation |
+| Tool | Mode Required | Detection Probe (`doctor`) | Auto-Install Method | Execution Isolation |
 |---|---|---|---|---|
-| **OpenJDK 21+** | System Prerequisite | `java -version` (regex match ≥ 21) | `brew install openjdk` / `apt install openjdk-21-jre-headless` / Win `winget` | System path / env check |
-| **Ghidra** | Native Decompiler | `ghidraRun` or `$GHIDRA_INSTALL_PATH` | Managed download of official GitHub release zip into `~/.openchat/tools/ghidra` | Headless execution sandbox |
-| **JADX** | Android Decompiler | `jadx --version` | Direct release download into `~/.openchat/tools/jadx` | Read-only target volume |
-| **ASAR CLI** | Electron Unpacker | Internal Rust native unpacker (`crates/tools::rea::asar`) | None needed; pure Rust implementation | In-memory extraction |
-| **Tshark / Dumpcap** | Packet Sniffer | `tshark -v` | System package manager trigger (`brew install wireshark` / `apt install tshark`) | Unprivileged PCAP read-only |
+| **Pure-Rust Engine** | Clean Room & Deep | Compiled into daemon (`crates/tools`) | Zero-install built-in | Memory safe Rust |
+| **Playwright/Chromium** | Clean Room & Deep | Headless browser probe | Bundled headless binary download | OS sandbox isolation |
+| **OpenJDK 21+** | Deep | `java -version` (regex $\ge 21$) | System PM (`brew`, `apt`, `winget`, `choco`) | System environment |
+| **Ghidra Headless** | Deep | `ghidraRun` or `$GHIDRA_INSTALL_PATH` | Managed download of official GitHub release zip | Headless CLI sandbox |
+| **JADX** | Deep | `jadx --version` | Direct release download into `~/.openchat/tools/rea/bin/` | Read-only volume mount |
+| **Tshark / Dumpcap** | Deep | `tshark -v` | System PM (`brew install wireshark`, `apt install tshark`)| Unprivileged PCAP read-only |
 
-### 5.4 Installation lifecycle & progress events
+### 5.4 Installation & Doctor Event Flow
 
-When a user clicks **Install** on the settings page, the daemon coordinates the job via `crates/session` and streams real-time progress events over WebSocket:
-
-```json
-{
-  "type": "rea:tool_install_progress",
-  "tool": "ghidra",
-  "phase": "downloading",
-  "percentage": 42.5,
-  "downloaded_bytes": 182452000,
-  "total_bytes": 429285000,
-  "message": "Downloading Ghidra 11.1.2 distribution..."
-}
-```
+When a user triggers an installation or runs `doctor`, events stream over WebSocket/SSE:
 
 ```json
 {
-  "type": "rea:tool_install_complete",
-  "tool": "ghidra",
-  "success": true,
-  "install_path": "/home/user/.openchat/tools/ghidra_11.1.2_PUBLIC",
-  "version": "11.1.2"
+  "type": "rea:doctor_report",
+  "clean_room_ready": true,
+  "deep_mode_ready": false,
+  "checks": [
+    {"name": "rust_engine", "status": "pass", "version": "0.2.0"},
+    {"name": "headless_browser", "status": "pass", "version": "128.0"},
+    {"name": "java_runtime", "status": "pass", "version": "21.0.2"},
+    {"name": "ghidra", "status": "pass", "version": "11.1.2"},
+    {"name": "jadx", "status": "missing", "fix": "Click Install to download JADX release"}
+  ]
 }
 ```
 
@@ -353,47 +337,6 @@ The injector owns **stack detection, skill selection, and lifecycle policy**. It
 3. **Compose a compact prompt.** Inject only relevant constraints, with an explicit mode such as `during` (guide generation) or `after` (audit/verification). Include token-footprint telemetry and an observable activation event.
 4. **Constrain output.** Request a strict patch representation (search/replace blocks or unified diff), exact target paths, and no unchanged-file restatement. Set limits for changed files/lines where appropriate.
 5. **After-generation audit.** Use a separate audit instruction to inspect the proposed change for policy omissions, incomplete implementation, scope creep, and test/verification gaps. The audit contributes findings; the deterministic AST gate remains the actual patch gate.
-
-#### Skill manifest sketch
-
-```yaml
----
-id: anti-slop-code
-name: Anti-slop code generation and review
-version: 1
-triggers:
-  languages: [python, typescript, javascript, go, rust]
-  file_patterns: ["*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.go", "*.rs"]
-modes:
-  during:
-    autoload: true
-    rules:
-      - Return only a compact patch in the requested format.
-      - Implement the requested behavior; do not leave placeholders or dummy branches.
-      - Prefer project conventions and existing APIs over invented abstractions.
-  after:
-    autoload: true
-    rules:
-      - Audit changed code for incomplete work and unsupported assumptions.
-      - Report tests/checks run and their result; do not claim checks not executed.
----
-```
-
-The injector should make loaded rules visible, for example:
-
-```json
-{
-  "type": "agent:skills_composed",
-  "turn_id": "turn_…",
-  "detected_stack": ["python", "typescript"],
-  "active": [
-    {"id": "anti-slop-code", "mode": "during", "tokens": 360},
-    {"id": "python-project-rules", "mode": "during", "tokens": 210}
-  ],
-  "patch_mode": "search_replace",
-  "estimated_context_tokens": 570
-}
-```
 
 #### Compact patch contract
 
@@ -436,39 +379,15 @@ A phrase may span multiple tokenizer pieces. Penalizing the first token of a phr
 6. Resample, with a maximum retry/rewind budget to avoid loops.
 7. Record a structured event for observability, avoiding storage of private prompt content unless explicitly enabled.
 
-Config should support severity levels and user/project lists. Phrase controls may cover clichés, unnecessary hedging, and known filler; avoid overbroad rules that damage legitimate wording. The upstream sampler materials describe probability adjustment strengths, phrase lists, cached-state backtracking, optional regex bans, and the limitations of most hosted commercial APIs. Regex bans may require non-streaming generation because the match extent is not known in advance.
-
 #### Runtime compatibility
 
 - **Local runtimes:** integrate where raw logits/probabilities, token-by-token continuation, and sampler state are exposed (e.g. a compatible Transformers-based serving loop or an inference engine with equivalent hooks).
 - **Compatible server/runtime:** an OpenAI-compatible façade can sit in front of an instrumented local model, but the façade alone does not create access to logits.
 - **Cloud API without logits/hooks:** do not claim true sampler enforcement. Use prompt constraints, output screening, and patch/AST gates; expose sampler status as `unavailable` rather than implying it ran.
-- **Streaming:** phrase matching may be streamable with bounded phrase windows; unrestricted regex rewind can conflict with already delivered tokens. The design should either buffer until safe-to-commit points or disable rewind-dependent matching in streaming mode.
-
-#### Sampler pseudocode
-
-```text
-while not stop:
-    logits = model.next_logits(state)
-    token = sample(filter(logits, retry_constraints))
-    state.append(token)
-    matcher.feed(decode(token))
-
-    if matcher.found_forbidden_span():
-        rewind_to(matcher.earliest_token_boundary())
-        lower_probability(offending_continuation, configured_strength)
-        retries += 1
-        if retries > max_retries:
-            stop_with_sampler_limit_or_fallback()
-    else:
-        emit_only_committed_prefix()
-```
-
-A production implementation must preserve enough state to reproduce the prefix deterministically (or explicitly tolerate resampling differences), handle tokenizer boundary mapping, cap cache memory, and make the fallback policy explicit.
 
 ### 6.4 Layer 3 — Polyglot Tree-Sitter AST Gate
 
-The AST gate is a **pre-patch quality barrier** over changed syntax. It should parse only changed files/hunks when practical, while retaining enough surrounding context to identify enclosing statements/functions. A first release targets Python, TypeScript, JavaScript, Go, and Rust.
+The AST gate is a **pre-patch quality barrier** over changed syntax. It parses only changed files/hunks in memory, while retaining enough surrounding context to identify enclosing statements/functions.
 
 #### Candidate checks
 
@@ -479,37 +398,20 @@ The AST gate is a **pre-patch quality barrier** over changed syntax. It should p
 | Go | empty function bodies, `panic("TODO")`, hard-coded mock return values, TODO/FIXME markers | Empty methods may satisfy interfaces intentionally; inspect declaration and comments. |
 | Rust | `todo!()`, `unimplemented!()`, `panic!("TODO")`, placeholder `Default::default()` / constant dummy data | `todo!()` and `unimplemented!()` are strong blockers in production patch paths; tests/examples may be allowed by policy. |
 
-Also scan comments and strings for TODO/FIXME/HACK/XXX, deferrals (“for now”, “temporary”), and hedging (“should work”, “hopefully”) as a separate textual rule family. AST parsing is used for syntax/context; regex/text scans are useful for comments. Keep these findings distinct so suppression and tuning can be precise.
-
 #### Gate policy
-
-Each finding should include path, range, rule ID, severity, message, and an evidence excerpt. Suggested policy:
 
 - **Block:** explicit unresolved stubs in changed production code (`todo!()`, `unimplemented!()`, clear generated placeholder exceptions, disallowed empty implementation bodies).
 - **Warn / require justification:** dummy dictionaries/objects, fixed mock returns, suspicious `pass`, empty catches, generic fallback branches.
 - **Inform:** TODO/hedging/deferment in comments or tests, depending on profile.
 - **Allow by configuration:** test fixtures, generated files, migrations, examples, explicit allowlist/inline suppression with reason.
 
-Avoid “zero false positives” as a blanket guarantee. Optimize for high signal, measured per rule and project profile.
-
-#### Performance and reliability
-
-- Parse the candidate post-patch content in memory; do not write first and scan after.
-- Reuse tree-sitter parsers and compiled query sets across files.
-- Skip unchanged files and use hunk-aware rescans only if the parser can still supply enclosing-node context; otherwise parse the full changed file.
-- Cache by content hash, grammar version, and rule-set version.
-- Fail closed only on explicit security/safety policy; syntax parse errors or missing grammar should return a visible “unable to validate” status and block patch application under strict mode.
-- Report timings by language/file size. Treat the cited per-language millisecond figures as upstream benchmark context, not a guaranteed OpenChat SLA.
-
 ---
 
 ## 7. Multi-client sync protocol & state invariants (OpenChamber-grounded)
 
-OpenChamber's frontend/backend architecture pioneered a sophisticated session synchronization system across directories and spaces (`packages/ui/src/sync` and `.agents/skills/sync-state-invariants`). In OpenChat's headless Rust daemon rewrite, we adopt and formalize these state invariants to ensure seamless synchronization across CLI, Web, Telegram, and Discord clients.
+OpenChamber\'s frontend/backend architecture pioneered a sophisticated session synchronization system across directories and spaces (`packages/ui/src/sync` and `.agents/skills/sync-state-invariants`). In OpenChat\'s headless Rust daemon rewrite, we adopt and formalize these state invariants to ensure seamless synchronization across CLI, Web, Telegram, and Discord clients.
 
 ### 7.1 Sources of truth and authority
-
-State must never be ambiguous or repaired ad-hoc across multiple callers. In OpenChat, every state classification has an explicit authority and boundary:
 
 | Store / Input | Authority | Scope | Invariant & Valid Use |
 |---|---|---|---|
@@ -527,26 +429,6 @@ State must never be ambiguous or repaired ad-hoc across multiple callers. In Ope
 5. **Never evict what is in use:** An active session, AST parse cache, or file snapshot acquired during execution cannot be evicted by memory-governor limits until the active turn commits or cancels. Capacity limits are soft targets handled during idle scans.
 6. **Fan-out avoidance:** Refresh only directories that are actively selected or explicitly named in a change event. Polling or broadcasting across unselected workspaces causes an unnecessary fan-out of background watchers and compiler processes.
 
-### 7.3 Multi-client event multiplexer
-
-```text
- ┌─────────────────────────────────────────────────────────────┐
- │                Headless OpenChat Daemon                     │
- │                                                             │
- │  crates/session: Multi-Client Sync Engine                   │
- │  • Directory Child Stores with Monotonic Revisions          │
- │  • Optimistic Shadow Reconciler                             │
- └──────────────────────────────┬──────────────────────────────┘
-                                │ SSE / WebSocket Event Stream
-        ┌───────────────────────┼───────────────────────┐
-        ▼                       ▼                       ▼
- ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
- │    Web UI    │        │  Desktop/CLI │        │ Telegram/Bot │
- └──────────────┘        └──────────────┘        └──────────────┘
-```
-
-When an event arrives at any client, optimistic UI state reconciles deterministically against the daemon's monotonic revision, preventing race conditions or ghost messages across simultaneous client connections.
-
 ---
 
 ## 8. Unified orchestration lifecycle
@@ -554,119 +436,45 @@ When an event arrives at any client, optimistic UI state reconciles deterministi
 ### 8.1 End-to-end flow
 
 ```text
- User request + workspace context
+ User request + target (URL, app, binary, or repo)
                │
                ▼
  ┌──────────────────────────────┐
- │ Bootstrap / stack detector   │  hardware probe, manifests, changed paths
+ │ Bootstrap / doctor probe     │  hardware check, engine readiness, clean-room vs deep mode
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
- │ Context compositor           │  scoped memory + skills + token budget
- │ emits visible activation     │  during-mode rules + patch contract
+ │ REA Study Phase              │  320 inspection tools, responsive captures, DOM/disassembly,
+ │ (crates/tools::rea)          │  evidence dossier saved to investigation.cany/
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
- │ Model generation             │── local sampler hook available?
- │ compact patch only           │       ├─ yes: backtracking sampler
- └───────────────┬──────────────┘       └─ no: report unavailable; rely on rules
-                 ▼
- ┌──────────────────────────────┐
- │ Parse patch / validate base  │  path allowlist, hashes, exact-match rules
+ │ Build Phase (Coding Agent)   │  Claude Code / Copilot / Grok / OpenChat via ACP/MCP,
+ │                              │  clean-room prompt rules, compact search/replace diff
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
- │ In-memory patch staging      │  no workspace mutation yet
+ │ Pre-commit AST Gate          │  Tree-sitter checks changed syntax in-memory (no todo!(),
+ │ (crates/core)                │  no empty stubs); repairs if rejected
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
- │ Tree-sitter AST + hygiene    │  changed Python/TS/JS/Go/Rust only
- │ gate                         │  findings carry location + rule ID
- └───────────┬──────────────────┘
-             │ clean / warnings                 │ blocking finding
-             ▼                                   ▼
- ┌──────────────────────────────┐       ┌──────────────────────────┐
- │ Apply atomically / commit    │       │ Repair loop              │
- │ run configured checks       │       │ structured findings to LLM│
- └───────────────┬──────────────┘       └────────────┬─────────────┘
-                 ▼                                    └── bounded retry
- ┌──────────────────────────────┐
- │ After-mode audit + summary   │  state exactly what ran/failed
- │ emit diagnostic events       │
+ │ Check Phase (Verification)   │  compare responsive visual diffs (3 screen widths),
+ │                              │  run test vectors, calculate similarity score
  └───────────────┬──────────────┘
                  ▼
-       Optional Dev Mode triage
-       (drafted by small local model; user confirms)
+ ┌──────────────────────────────┐
+ │ Ready Phase                  │  launch preview / play-test, ask for iterative changes
+ └──────────────────────────────┘
 ```
 
-### 8.2 State machine
-
-```text
-CREATED → BOOTSTRAPPED → CONTEXT_COMPOSED → GENERATING → PATCH_PARSED → STAGED
-      → AST_CHECKING → {REJECTED → REPAIRING → PATCH_PARSED, VERIFIED}
-      → APPLYING → POST_CHECKS → COMPLETED
-
-Any stage may transition to FAILED, CANCELLED, or NEEDS_USER_INPUT.
-No rejected patch is applied. No external issue is created without confirmation.
-```
-
-### 8.3 Structured events
-
-A shared event envelope can power Web, CLI, Telegram, and Discord clients:
-
-```ts
-interface AgentEvent<T = unknown> {
-  eventId: string;
-  sessionId: string;
-  turnId: string;
-  occurredAt: string;
-  type: string;
-  severity?: "debug" | "info" | "warning" | "error";
-  payload: T;
-}
-
-interface GateFinding {
-  ruleId: string;
-  severity: "block" | "warning" | "info";
-  path: string;
-  startLine: number;
-  startColumn: number;
-  endLine?: number;
-  message: string;
-  evidence?: string; // redact or truncate before persistence/telemetry
-  confidence?: number;
-}
-```
-
-Example rejection event:
-
-```json
-{
-  "type": "code:patch_rejected",
-  "severity": "warning",
-  "payload": {
-    "path": "src/lib.rs",
-    "findings": [{
-      "ruleId": "rust.todo_macro",
-      "severity": "block",
-      "startLine": 42,
-      "startColumn": 5,
-      "message": "New production code contains todo!(); implement or explicitly allow this stub."
-    }],
-    "retryAllowed": true
-  }
-}
-```
-
-### 8.4 Rust backend crate mapping (`cmspeedau/open-chat`)
-
-In `open-chat`, these responsibilities map directly to workspace crates:
+### 8.2 Rust backend crate mapping (`cmspeedau/open-chat`)
 
 | Lifecycle Phase | Responsible Crate | Key Functionality |
 |---|---|---|
 | **Bootstrap, Sync & Triage** | `crates/session` | Manages `setup_beat`, directory child stores, monotonic sync revisions, and small-model diagnostic offloading. |
 | **Skill Index & Vector Store** | `crates/memory` | Stores synthesized `SKILL.md` contracts and project conventions using `rusqlite` + `sqlite-vec`. |
-| **Skill Synthesis, REA & Installer** | `crates/tools` | Houses compiler symbol extraction, decompiler bridges (Ghidra, Hopper, IDA), ASAR unpackers, and automated tool installer manager (`crates/tools::rea::installer`). |
+| **REA Engine & Tool Installer** | `crates/tools` | Implements the 300+ pure-Rust tools, Ghidra/JADX bridges, ASAR unpacker, and `doctor` installer manager (`crates/tools::rea::installer`). |
 | **AST Inspection & Patching** | `crates/core` | Parses search/replace diffs in-memory, executes Tree-sitter queries, manages atomic commits and shadow updates. |
 | **Inference Control** | `crates/governor` | Manages local backtracking sampler, concurrency semaphores, process priority. |
 | **Workspace File Watcher** | `crates/watcher` | Employs debounced `notify` to track file modifications and invalidate AST caches. |
@@ -710,105 +518,46 @@ pub trait AstGate: Send + Sync {
 }
 ```
 
-### 9.2 Inbuilt REA tool contract sketch (`crates/tools::rea`)
+### 9.2 Craft-Anything Project Schema (`craft.json`)
 
 ```rust
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ProjectMode {
+    CleanRoom,
+    Deep,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TargetKind {
-    NativeBinary { arch: String, format: String },
-    ElectronAsar { app_name: String },
-    DotNetAssembly,
-    AndroidApk { package_id: String },
-    NetworkCapture { pcap_or_har: PathBuf },
+    Website { url: String },
+    NativeBinary { path: PathBuf, arch: String, format: String },
+    ElectronAsar { path: PathBuf, app_name: String },
+    GameExecutable { path: PathBuf, engine: Option<String> },
+    AndroidApk { path: PathBuf, package_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvidenceTrace {
-    pub source_location: String,
-    pub pseudocode: Option<String>,
-    pub assembly_bytes: Option<Vec<u8>>,
-    pub observed_io: Vec<(Vec<u8>, Vec<u8>)>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReaInvestigationReport {
+pub struct CraftProject {
+    pub id: String,
+    pub request: String,
+    pub mode: ProjectMode,
     pub target: TargetKind,
-    pub feature_name: String,
-    pub evidence: Vec<EvidenceTrace>,
-    pub clean_room_spec: String,
-    pub proposed_rust_signature: String,
+    pub target_folder: PathBuf,
+    pub status: StepStatus,
+    pub similarity_score: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolStatus {
-    pub tool_id: String,
-    pub name: String,
-    pub installed: bool,
-    pub version: Option<String>,
-    pub path: Option<PathBuf>,
-    pub requires_java: bool,
+pub enum StepStatus {
+    Study { progress: f32 },
+    Build { agent: String },
+    Check { checks_passed: usize, checks_total: usize },
+    Ready { preview_url: Option<String> },
 }
 ```
-
-### 9.3 TypeScript composition and diff-merger sketch
-
-The TypeScript layer can orchestrate a native Tree-sitter/Rust service or a WASM parser package. Keep the gate API stable and return structured data regardless of implementation language.
-
-```ts
-export type Severity = "block" | "warning" | "info";
-
-export interface PatchChange {
-  path: string;
-  baseHash: string;
-  oldText: string;
-  newText: string;
-}
-
-export interface GateFinding {
-  ruleId: string;
-  severity: Severity;
-  path: string;
-  line: number;
-  column: number;
-  message: string;
-}
-
-export interface AstGate {
-  inspect(path: string, source: string): Promise<GateFinding[]>;
-}
-
-export interface Workspace {
-  read(path: string): Promise<{ text: string; hash: string }>;
-  commitAtomically(files: Array<{ path: string; expectedHash: string; text: string }>): Promise<void>;
-}
-
-export async function validatePatch(
-  changes: PatchChange[], workspace: Workspace, gate: AstGate,
-): Promise<{ ok: boolean; findings: GateFinding[] }> {
-  const staged: Array<{ path: string; expectedHash: string; text: string }> = [];
-  const findings: GateFinding[] = [];
-
-  for (const change of changes) {
-    const snapshot = await workspace.read(change.path);
-    if (snapshot.hash !== change.baseHash) throw new Error(`stale patch: ${change.path}`);
-    const occurrences = countExact(snapshot.text, change.oldText);
-    if (occurrences !== 1) throw new Error(`expected one exact match in ${change.path}; found ${occurrences}`);
-    const proposed = snapshot.text.replace(change.oldText, change.newText);
-    staged.push({ path: change.path, expectedHash: snapshot.hash, text: proposed });
-  }
-
-  for (const file of staged) findings.push(...await gate.inspect(file.path, file.text));
-  if (findings.some(f => f.severity === "block")) return { ok: false, findings };
-
-  await workspace.commitAtomically(staged);
-  return { ok: true, findings };
-}
-```
-
-**Diff merger policy:** group non-overlapping edits per file; validate all `baseHash` values before staging; detect overlapping hunks and duplicate match ambiguity; preserve line endings/encoding where possible; do not merge conflicting agent patches automatically. For concurrent agents, use optimistic locking and ask the orchestrator to rebase/retry on conflict. A clean diff is a deliberate interface contract and cost-control strategy, not a substitute for tests.
 
 ---
 
@@ -848,56 +597,11 @@ Instead, OpenChat **offloads diagnostics to the small local model (Tier 0)**:
 ```
 
 #### Why offloading to the small model is essential:
-1. **Zero context pollution:** Long stack traces and error dumps are notoriously noisy. Injecting a 200-line crash trace into the main coding conversation burns valuable context tokens and distracts the primary model from the user's ongoing task.
+1. **Zero context pollution:** Long stack traces and error dumps are notoriously noisy. Injecting a 200-line crash trace into the main coding conversation burns valuable context tokens and distracts the primary model from the user\'s ongoing task.
 2. **Zero token cost:** Incident analysis and log clustering do not require high-end frontier reasoning; a fast 1.5B or 3B local model handles trace normalization, clustering, and issue drafting entirely offline at zero cost.
 3. **Survives cloud API disconnects:** If the failure is caused by an expired API key, network timeout, or provider 500 error, the main cloud model cannot diagnose the issue because it is unreachable. The local small model stays operational and diagnoses the outage locally.
 
-### 10.2 Diagnostic sources and collection
-
-Initial signals:
-
-- **AST gate rejections:** rule ID, language, changed path (possibly path-redacted), source range, severity, retry outcome.
-- **Tool-call failures:** tool name/category, sanitized arguments summary, exit/error class, duration, retry count.
-- **Streaming/parser crashes:** parser stage, event sequence number, exception class, bounded stack trace, provider/transport metadata.
-- **Agent lifecycle failures:** timeouts, missing acknowledgements, subagent heartbeat expiration, cancellation cause.
-- **Post-check failures:** command category and exit code; captured stderr must be bounded and subject to redaction.
-
-Each event should be normalized into a versioned schema and stored in a bounded local ring buffer. Use redaction before persistence where feasible; provide user controls for retention, deletion, and whether diagnostics are enabled. Avoid collecting prompt contents, secrets, environment values, complete source files, or unrestricted command output by default.
-
-```ts
-interface DiagnosticEvent {
-  schemaVersion: 1;
-  diagnosticId: string;
-  sessionId?: string;
-  timestamp: string;
-  category: "ast_gate" | "tool_failure" | "stream_parse" | "agent_lifecycle" | "post_check";
-  component: string;
-  failureCode: string;
-  summary: string;
-  sanitizedDetails: Record<string, unknown>;
-  occurrenceCount: number;
-  privacy: {
-    pathsRedacted: boolean;
-    contentIncluded: boolean;
-    userApprovedExport: boolean;
-  };
-}
-```
-
-### 10.3 Root-cause analysis and issue draft generation (Local Coprocessor)
-
-The small local diagnostic analyzer receives a **curated, bounded incident bundle**, not unrestricted access to local files. It:
-
-1. Clusters repeated events by normalized signature and identifies first/last occurrence.
-2. Distinguishes confirmed facts, hypotheses, and missing evidence.
-3. Correlates component versions, event ordering, and retry outcomes without inventing details.
-4. Suggests a minimal reproduction and classifies severity/impact, clearly marking estimates.
-5. Produces an issue draft with a title, environment fields only if explicitly available, observed/expected behavior, sanitized logs, and actionable reproduction steps.
-6. Includes an evidence manifest so the user can see exactly what data is proposed for export.
-
-The output remains a **draft**. It must not select an arbitrary repository, infer a GitHub owner/repo, or include unsanitized data. The issue target must be selected by the user or resolved from an explicit workspace-to-repository configuration shown in the confirmation UI.
-
-### 10.4 User-confirmation card and workflow
+### 10.2 User-confirmation card and workflow
 
 Example Web UI card:
 
@@ -923,55 +627,6 @@ Confirmation requirements:
 - “Create” is a deliberate, explicit action; no pre-checked confirmation and no background auto-submit.
 - Show target repository, title/body, labels, assignees, and every attachment/export field before dispatch.
 - Allow redaction, editing, copying without publishing, and discard.
-- If the draft includes any source excerpt or user content, call it out and require explicit inclusion.
-- Save no GitHub token in the issue body or diagnostic bundle. Use the configured GitHub credential path with least privilege.
-
-### 10.5 GitHub Issue Dispatcher
-
-The dispatcher may use the GitHub API directly or a GitHub MCP/connected-service adapter. It should expose a narrow operation such as `createIssue`, not a general-purpose “act on repository” capability.
-
-```ts
-interface IssueDraft {
-  repository: { owner: string; name: string };
-  title: string;
-  body: string;
-  labels: string[];
-  evidence: Array<{ id: string; description: string; included: boolean }>;
-  draftId: string;
-  revision: number;
-}
-
-interface UserApproval {
-  approved: true;
-  draftId: string;
-  revision: number; // prevents dispatch of an edited-after-approval draft
-  approvedAt: string;
-  repository: string;
-}
-
-interface GitHubIssueDispatcher {
-  createIssue(draft: IssueDraft, approval: UserApproval): Promise<{ url: string; number: number }>;
-}
-```
-
-Guardrails:
-
-- Require explicit user authorization for the specific repository and exact draft revision.
-- Validate repository access and issue-creation scope; do not request broader permissions than necessary.
-- Protect against duplicate dispatch with an idempotency key derived from the approved draft ID/revision.
-- Re-check that the draft has not changed since the user approved it.
-- Present API errors as actionable UI states; never report success until GitHub returns a confirmed issue URL/number.
-- If MCP is selected, keep approval gating in OpenChat and pass only the approved payload to the connector.
-- Respect repository policy and rate limits; provide “copy draft” fallback if dispatch is unavailable.
-
-### 10.6 Dev Mode event lifecycle
-
-```text
-runtime event → normalize → redact → bounded local store → deduplicate/cluster
-      → local small model triages incident (offloaded from main LLM)
-      → user-visible diagnosis card → review/edit
-      → explicit approval → GitHub API/MCP → confirmed URL or recoverable error
-```
 
 ---
 
@@ -983,10 +638,8 @@ OpenChat is conceived as a next-generation agentic workspace and rewrite inspire
 
 - Web workspace for interactive coding and inspection.
 - Telegram and Discord bridges for notifications, approvals, and remote sessions.
-- CLI/API for automation and local integrations.
+- CLI/API (`openchat-cli`) for headless workflows, MCP serving, and automation.
 - A persistent daemon that continues work when a browser tab closes.
-
-The engine/client separation is architectural: clients present state and collect consent; the daemon owns sessions, tools, memory, policy, event streams, and task supervision.
 
 ### 11.2 Native scoped memory
 
@@ -998,111 +651,42 @@ A local embedded memory system addresses cross-session amnesia without stuffing 
 - **Sparse retrieval:** SQLite FTS5 for exact names, commands, symbols, and keywords.
 - **Dense retrieval:** an embedded vector extension such as `sqlite-vec` or a local alternative for semantic recall.
 - **Hybrid ranking:** merge sparse and dense results (e.g. reciprocal rank fusion), then select a small, explicit token budget per turn.
-- **Consolidation:** asynchronous end-of-turn/idle reflection, contradiction resolution, and replacement of superseded conventions rather than endless duplication.
-
-Suggested tools:
-
-```ts
-memory_store({ scope, category, key, value, source? })
-memory_recall({ scope, query, tokenBudget? })
-memory_forget({ scope, key })
-```
-
-Memory should be inspectable, editable, scoped, and deletable. Retrieval must report which memories were injected and their token cost.
-
-### 11.3 Observable skill system and auto-binding
-
-Skills should be modular, indexed, and loaded only when relevant. A registry can match `SKILL.md` metadata against language, manifest file, glob, framework, task intent, and lifecycle mode. It should support:
-
-- `during` rules to guide a task, and `after` rules to audit or verify it.
-- Persistent project-level activation such as “use anti-slop during this project.”
-- Subskills (e.g. UI, code, copywriting) chosen based on changed files.
-- On-demand `load_skill` calls and explicit `agent:skill_activated` / `agent:skills_composed` events.
-- Visible badges across clients, including active skill names, modes, and token footprints.
-- Skill-gap prompting when a detected language/framework has no matching skill; bootstrap/import only after user consent.
-
-### 11.4 Context compositor and output discipline
-
-Before model invocation, a deterministic compositor combines:
-
-```text
-request + scoped memory + selected skill rules + tool schemas + relevant history
-        → token-budgeted prompt with attribution and active-mode metadata
-```
-
-It should expose per-turn token counts for user/context, tools, memories, and skills. To reduce output cost and latency, code edits default to compact exact patches, not full-file rewrites or conversational narration.
-
-### 11.5 Reliability and resource governance
-
-The supplied rewrite notes also point to reliability features that complement anti-slop and Dev Mode:
-
-- **Bounded log buffers:** circular buffers and output truncation with an explicit “more available” mechanism.
-- **Memory pressure awareness:** shed nonessential caches and pause new workers before host memory is exhausted; avoid destructive cleanup.
-- **Multi-agent governor:** global concurrency semaphore, a shared/debounced workspace watcher, queued/serialized heavy compiler checks, process priority controls, and configurable CPU/memory limits.
-- **Subagent supervision:** typed async message channels, acknowledgements, heartbeats, timeouts, and a watchdog that reports graceful failure instead of hanging forever.
-- **Resilient event streams:** reconnect/backoff, replay buffers, idempotency keys, and explicit stalled/retrying/failed states.
-- **Long-session UI efficiency:** virtualized messages and compact summaries for old turns; expand raw tool payloads only on request.
-- **Autonomous verification:** run the project’s configured formatter/linter/type checker/tests when policy allows, and report exactly what ran.
-
-These features should be centrally orchestrated by the daemon so multiple clients and subagents do not each create their own watchers, compiler storms, or unbounded histories.
 
 ---
 
 ## 12. Roadmap and integration sequence
 
 ### Phase 0 — Contracts, measurement & bootstrap concierge
-
 - Define patch envelope, event schemas, diagnostic privacy policy, workspace-root/path policy, and per-project configuration.
 - Implement the Tier-0 lightweight local bootstrap model and `setup_beat` flows for zero-cloud onboarding.
-- Establish test fixtures for placeholder/stub examples and intentional exceptions.
-- Benchmark parser and sampler overhead on supported languages and model runtimes; publish p50/p95 by file size and mode.
 
 ### Phase 1 — Safe patch pipeline
-
 - Implement exact-match and unified-diff parsing, base-hash validation, atomic staging/rollback, and rejection UX in `crates/core`.
 - Add Tree-sitter adapters for Python, TypeScript/JavaScript, Go, and Rust.
-- Start with high-confidence blockers (`todo!()`, `unimplemented!()`, obvious placeholder exceptions) and configurable warning rules.
-- Add unit, fuzz, malformed-patch, stale-file, and multi-file rollback tests.
 
 ### Phase 2 — Skill injection & AST-grounded synthesis
+- Add workspace stack fingerprinting, skill metadata index, `during` / `after` composition, and visible activation events.
+- Implement repository-grounded skill synthesis reading manifests, AST conventions, and local compiler symbols.
 
-- Add workspace stack fingerprinting, skill metadata index, `during` / `after` composition, skill-gap prompt, and visible activation events.
-- Implement repository-grounded skill synthesis (reading manifests, existing AST conventions, and local compiler symbols rather than web scraping).
-- Integrate compact patch generation and bounded repair retries.
-- Add context/token inspector and per-rule false-positive/suppression telemetry.
-
-### Phase 3 — Inbuilt REA toolchain, Settings Toggle & Installer
-
-- Implement `crates/tools::rea` with static format detectors (ELF, PE, Mach-O, ASAR, APK, HAR).
-- Add headless bridges for disassemblers (Ghidra, Hopper, IDA, Kuna).
-- Build the **REA Settings UI & Automated Tool Installer** (`crates/tools::rea::installer`) for Ghidra, JADX, and Tshark.
-- Introduce clean-room Evidence Contracts (`EVIDENCE.md` and test-vector generation) to verify reverse-engineered implementations before AST gating.
+### Phase 3 — Inbuilt REA toolchain & Craft-Anything integration
+- Implement `crates/tools::rea` with the 4-stage engine: **Study → Build → Check → Ready**.
+- Build the **Clean Room vs. Deep Mode** toggle switch and CLI flags (`--clean-room` / `--deep`).
+- Implement the `openchat doctor` diagnostic command and automated tool installer manager (`crates/tools::rea::installer`) for Ghidra, JADX, Chromium, and Tshark.
+- Introduce responsive visual diff checks (3 screen widths) and test vector verification.
 
 ### Phase 4 — Sampler integration
-
-- Implement the sampler adapter in `crates/governor` for local inference runtimes exposing logits and rewindable state.
-- Support phrase rules first; add regex bans only with explicit non-streaming or buffered-stream semantics.
-- Mark unsupported providers clearly and preserve the same patch/AST checks for all providers.
-- Tune project-owned phrase lists and strengths; maintain an allowlist and quality regression corpus.
+- Implement the backtracking sampler in `crates/governor` for local inference runtimes exposing logits and rewindable state.
 
 ### Phase 5 — Daemon, memory, sync invariants & Dev Mode foundation
-
 - Build daemon session lifecycle (`crates/session`), multi-client sync protocol, directory child stores, monotonic revisions, and memory scopes (`crates/memory`).
 - Offload incident clustering, stack-trace normalization, and failure root-cause analysis to Tier-0 local model.
-- Add operational diagnostics for AST rejections, tool failures, stream parse errors, and subagent timeouts.
-- Deliver draft-only root-cause summaries with confidence/evidence boundaries without polluting main LLM context.
 
 ### Phase 6 — Confirmed GitHub dispatch and multi-client workflows
-
 - Implement review/edit card and explicit approval object bound to draft revision/repository.
 - Add API/MCP dispatcher with least-privilege access, idempotency, and a copy-only fallback.
-- Surface the same diagnostic and approval workflow in Web first, then Telegram/Discord using inline confirmation UI compatible with each client.
 
 ### Phase 7 — Scale and polish
-
-- Add further language adapters and semantic skill routing.
-- Add multi-agent resource governor, shared watcher (`crates/watcher`), build queue, reconnect/replay semantics, and virtualized long-session UI.
-- Validate claims against measured production metrics; revise thresholds based on telemetry and opt-in user feedback.
+- Add further language adapters, multi-agent resource governor, shared watcher (`crates/watcher`), and virtualized long-session UI.
 
 ---
 
@@ -1113,35 +697,19 @@ These features should be centrally orchestrated by the daemon so multiple client
 | Capability | What it can enforce | Important limitation |
 |---|---|---|
 | Bootstrap concierge & Diagnostic coprocessor | Zero-cost setup, hardware sizing, manifest detection, trace clustering & draft issue generation | Limited reasoning capability compared to frontier models; restricted to onboarding beats and structured diagnostic summarization. |
-| REA Subsystem & Installer | Ground-truth behavioral evidence from binaries, ASAR, APK, and network traces | Reverse-engineering outputs require clean-room validation; external tools subject to system package manager availability and host platform limits. |
+| REA Subsystem (Clean Room Mode) | Strict prohibition against reading private code or decompiling binaries; strictly uses visible screenshots & public contracts | Cannot reverse internal logic not visible in public UI or wire traffic. |
+| REA Subsystem (Deep Mode) | Ground-truth behavioral evidence from binaries, ASAR, APK, and network traces | Reverse-engineering outputs require clean-room validation; external tools subject to host system package manager limits. |
 | Prompt injector | Output format, preferred practices, selected project rules | Model may ignore or misunderstand instructions. |
 | Backtracking sampler | Selected phrase/token continuations in a hook-enabled generator | Requires logits and rewind state; many hosted APIs do not expose these. |
 | AST gate | Syntax-aware detection of configured constructs in changed content | Does not prove semantic correctness, safe behavior, or successful compilation. |
-| Compiler/tests | Project-defined correctness checks | Can be slow, incomplete, environment-dependent, or unavailable. |
-| Dev Mode analysis (small model) | Summarize and hypothesize from selected diagnostics | AI analysis can be wrong; issue draft must be verified and approved by user. |
-
-### 13.2 False positives and exceptions
-
-- Keep `block`, `warning`, and `info` separate.
-- Provide per-project profiles (core/standard/strict) and explicit allowlists with reason/expiry where useful.
-- Default blockers should be narrow and evidence-based; an empty `catch` or `pass` should not be universally equivalent to a defect.
-- Avoid duplicating routine style checks already handled by ESLint, Clippy, formatters, or project linters unless there is a deliberate override.
-
-### 13.3 Privacy and security
-
-- Diagnostics are local-first and bounded. Redact secrets before storage/export; never include environment dumps or credentials.
-- Show exact diagnostic fields proposed for external transmission.
-- Require explicit approval for issue creation and bind approval to the final payload revision and target repository.
-- Validate patch paths against the workspace root; prevent traversal and symlink escapes according to project policy.
-- Treat model-proposed code, issue bodies, and tool outputs as untrusted input. Escape rendered content and do not interpret issue text as tool instructions.
-- Use least-privilege GitHub auth and avoid giving the diagnostic analyzer generic repository-write capability.
 
 ---
 
 ## 14. References and provenance
 
-The uploaded notes identify these reference projects and concepts:
+The architecture is grounded in and inspired by these reference projects:
 
+- [`storytold/craft-anything`](https://github.com/storytold/craft-anything) — The foundational pure-Rust engine for reverse-engineering websites, apps, and games. Establishes the 4-step **Study → Build → Check → Ready** lifecycle, the strict **Clean Room vs. Deep Mode** dichotomy, responsive checks at 3 screen widths, and the CLI/desktop `doctor` tool installer architecture.
 - [`morluto/rea`](https://github.com/morluto/rea) — Reverse Engineer Anything: unified agent MCP/tools for native binaries, JavaScript/Electron ASAR, mobile APKs, network traces, and clean-room reconstruction.
 - [`openchamber/openchamber`](https://github.com/openchamber/openchamber) — multi-client sync protocol, directory child stores, session reconciliation invariants (`sync-state-invariants`), and inspiration for the headless rewrite.
 - [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) — two-tier architecture, small model onboarding flow, and `setup_beat` interactive card orchestration.

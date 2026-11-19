@@ -127,7 +127,26 @@ async fn handle(mut sock: TcpStream, engine: Arc<Engine>, hub: Arc<Hub>) -> anyh
         .split_once('?')
         .map(|(_, q)| q.to_owned())
         .unwrap_or_default();
+    const INDEX_HTML: &str = include_str!("../assets/index.html");
     match (method.as_str(), route.as_str()) {
+        ("GET", "/") => {
+            sock.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncache-control: no-store\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{INDEX_HTML}",
+                    INDEX_HTML.len()
+                )
+                .as_bytes(),
+            )
+            .await?;
+            sock.flush().await?;
+            Ok(())
+        }
+        ("GET", "/favicon.ico") => {
+            sock.write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                .await?;
+            sock.flush().await?;
+            Ok(())
+        }
         ("GET", "/healthz") => send_json(&mut sock, 200, &json!({"ok": true})).await,
         ("GET", "/status") => {
             let doc = engine.status_json().await;
@@ -380,6 +399,35 @@ mod tests {
             .filter_map(|l| l.strip_prefix("data: "))
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn index_serves_the_app() {
+        let (_engine, _hub, addr) = harness().await;
+        let resp = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            resp.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        let html = resp.text().await.unwrap();
+        assert!(html.contains("<title>open-chat</title>"));
+        assert!(html.contains("id=\"composer\""));
+        // No template filler: the empty-state copy must be the real one.
+        assert!(html.contains("No turns yet"));
+        assert!(!html.to_ascii_lowercase().contains("lorem"));
+        let fav = reqwest::Client::new()
+            .get(format!("http://{addr}/favicon.ico"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(fav.status(), 204);
     }
 
     #[tokio::test]

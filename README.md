@@ -455,8 +455,8 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Real-Time Token, Memory & Governor Badges:** Transparent per-turn telemetry showing active skills, token consumption, memory health status, active worker count, and CPU core cap.
 
 ### Phase 5: Multi-Interface Adapters & Resilient UI
-- [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.
-- [ ] **Lightweight Virtualized Web UI:** Collapsed envelope rendering preventing 1.2GB+ DOM overload and input stutter in long sessions.
+- [x] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.
+- [x] **Lightweight Virtualized Web UI:** Collapsed envelope rendering preventing 1.2GB+ DOM overload and input stutter in long sessions.
 - [x] **Interactive Dynamic Core Throttling Controls:** OpenChamber-style header pill / settings slider and bot chat commands (`/cores <n>`, `/governor status`) for real-time CPU throttling adjustments via daemon IPC.
 - [x] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
 - [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.

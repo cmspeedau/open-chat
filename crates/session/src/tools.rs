@@ -27,6 +27,7 @@ pub struct Diagnostics {
     armed: AtomicBool,
     count: AtomicUsize,
     last: StdMutex<Option<Diagnosis>>,
+    verifications: AtomicUsize,
 }
 
 impl Diagnostics {
@@ -55,6 +56,18 @@ impl Diagnostics {
     #[must_use]
     pub fn last(&self) -> Option<Diagnosis> {
         self.last.lock().expect("diagnostics lock").clone()
+    }
+
+    /// Count an actually-executed verification pass. Badges report
+    /// `checks_run` from this, so a selected-but-unused verifier is never
+    /// claimed as run.
+    pub fn note_verification(&self) {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn verifications(&self) -> usize {
+        self.verifications.load(Ordering::SeqCst)
     }
 }
 
@@ -377,6 +390,7 @@ impl ApplyPatchTool {
     /// Run the configured verification command (build-slot governed).
     pub async fn verify(&self) -> Option<ToolRecord> {
         let verb = self.verifier.as_ref()?;
+        self.diagnostics.note_verification();
         let (program, args) = verb.split_first()?;
         let req = ExecRequest {
             program: program.clone(),

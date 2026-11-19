@@ -271,7 +271,11 @@ impl Engine {
                     deduped_rule_lines: composed.deduped_rule_lines,
                     memory_faults: badges_diag.count(),
                     prose_findings: badges_surfaces.findings(),
-                    checks_run: badges_checks_run.clone(),
+                    checks_run: if badges_diag.verifications() > 0 {
+                        badges_checks_run.clone()
+                    } else {
+                        Vec::new()
+                    },
                     checks_skipped: badges_checks_skipped.clone(),
                     armed_surfaces: badges_surfaces
                         .list()

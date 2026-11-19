@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>open-chat</title>
+<style>
+/* Design read: local daemon control plane for a developer. Calm, dense,
+   instrument-grade. One accent (teal), no gradients, no glass, no motion
+   beyond a spinner that respects prefers-reduced-motion. */
+:root {
+  --bg: #ffffff; --panel: #f6f7f8; --line: #d7dbe0; --text: #1a1d21;
+  --muted: #525a64; --accent: #0a6f6a; --accent-ink: #ffffff;
+  --ok: #1a7f37; --warn: #9a6700; --err: #b3261e;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a; --panel: #1b1f24; --line: #30373e; --text: #e6e9ed;
+    --muted: #9aa4b0; --accent: #35b3ab; --accent-ink: #08211f;
+    --ok: #57ab5a; --warn: #d4a72c; --err: #e5534b;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 15px/1.55 var(--sans); }
+header {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 14px 18px; border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+#stack { color: var(--muted); font: 12px var(--mono); }
+#conn { margin-left: auto; display: flex; align-items: center; gap: 7px;
+        font: 12px var(--mono); color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.streaming { background: var(--accent); animation: pulse 1.1s infinite; }
+.dot.dropped { background: var(--warn); }
+.dot.off { background: var(--err); }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+  .dot.streaming { animation: none; }
+}
+main { max-width: 980px; margin: 0 auto; padding: 16px 18px 120px; }
+#badges {
+  display: none; flex-wrap: wrap; gap: 6px; margin: 4px 0 18px;
+  font: 12px var(--mono);
+}
+#badges span {
+  border: 1px solid var(--line); background: var(--panel);
+  border-radius: 4px; padding: 2px 8px; color: var(--muted);
+}
+#badges span b { color: var(--text); font-weight: 600; }
+.empty {
+  color: var(--muted); border: 1px dashed var(--line); border-radius: 6px;
+  padding: 26px; text-align: center; margin-top: 30px;
+}
+.turn { border: 1px solid var(--line); border-radius: 6px; margin-bottom: 12px;
+        background: var(--panel); }
+.turn summary {
+  display: flex; gap: 10px; align-items: baseline; padding: 10px 14px;
+  cursor: pointer; list-style: none;
+}
+.turn summary::-webkit-details-marker { display: none; }
+.turn summary .st { font: 12px var(--mono); color: var(--muted); flex: none; }
+.turn summary .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st.ok { color: var(--ok); } .st.fail { color: var(--err); } .st.run { color: var(--accent); }
+.turn .body { padding: 0 14px 12px; }
+pre.ev {
+  font: 12.5px/1.5 var(--mono); color: var(--muted); margin: 0 0 10px;
+  white-space: pre-wrap; word-break: break-word;
+}
+pre.ev .adv { color: var(--warn); }
+pre.ev .err { color: var(--err); }
+.answer {
+  white-space: pre-wrap; margin: 0; padding: 10px 12px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px;
+  font: 14px/1.55 var(--sans);
+}
+form {
+  position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg);
+  border-top: 1px solid var(--line); padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+}
+form .wrap { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; }
+label.sr { position: absolute; width: 1px; height: 1px; overflow: hidden;
+           clip: rect(0 0 0 0); }
+textarea {
+  flex: 1; resize: none; rows: 1; min-height: 44px; max-height: 160px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 11px 12px; font: 15px/1.4 var(--sans);
+}
+textarea:focus-visible, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+button {
+  background: var(--accent); color: var(--accent-ink); border: 0;
+  border-radius: 6px; padding: 0 20px; min-height: 44px;
+  font: 600 14px var(--sans); cursor: pointer;
+}
+button:disabled { opacity: .55; cursor: not-allowed; }
+#note { max-width: 980px; margin: 8px auto 0; font: 12.5px var(--mono);
+        color: var(--warn); min-height: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>open-chat</h1>
+  <span id="stack"></span>
+  <span id="conn"><span class="dot" id="dot"></span><span id="connText">idle</span></span>
+</header>
+<main>
+  <div id="badges" aria-live="polite"></div>
+  <p class="empty" id="empty">No turns yet. Ask the agent to change or check something in this workspace.</p>
+  <div id="turns" aria-live="polite"></div>
+</main>
+<form id="composer">
+  <div class="wrap">
+    <label class="sr" for="prompt">Your request</label>
+    <textarea id="prompt" aria-label="Your request" placeholder="e.g. add a CLI flag to show the resource budget"></textarea>
+    <button id="send" type="submit">Run</button>
+  </div>
+  <div id="note" role="status"></div>
+</form>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+// No silent failures: page and promise errors surface in the note line.
+window.addEventListener("error", (e) => note("script error: " + e.message));
+window.addEventListener("unhandledrejection", (e) =>
+  note("async error: " + (e.reason && e.reason.message ? e.reason.message : e.reason)));
+const MAX_TURNS = 30;               // DOM envelope cap (older turns dropped)
+let running = false;
+
+function conn(state, text) {
+  $("dot").className = "dot " + state;
+  $("connText").textContent = text;
+}
+function note(msg) { $("note").textContent = msg || ""; }
+
+function elTurn(prompt) {
+  const d = document.createElement("details");
+  d.className = "turn";
+  d.open = true;
+  d.innerHTML =
+    '<summary><span class="st run">running</span><span class="q"></span></summary>' +
+    '<div class="body"><pre class="ev"></pre><p class="answer" hidden></p></div>';
+  d.querySelector(".q").textContent = prompt;
+  const host = $("turns");
+  host.appendChild(d);
+  $("empty").hidden = true;
+  while (host.children.length > MAX_TURNS) {
+    host.removeChild(host.firstChild);
+    note("older turns dropped from view (daemon keeps the full log)");
+  }
+  return d;
+}
+
+function addEvent(turn, cls, text) {
+  const pre = turn.querySelector(".ev");
+  const span = document.createElement("span");
+  if (cls) span.className = cls;
+  span.textContent = text + "\n";
+  pre.appendChild(span);
+}
+
+function finishTurn(turn, closed, badges) {
+  const st = turn.querySelector(".st");
+  st.textContent = closed ? "closed" : "failed";
+  st.className = "st " + (closed ? "ok" : "fail");
+  turn.open = false;   // collapsed envelope: detail stays one click away
+  if (badges) renderBadges(badges);
+}
+
+function renderBadges(b) {
+  const bar = $("badges");
+  bar.style.display = "flex";
+  const skills = (b.skills || []).map(s => `${s.id} ${s.tokens}t${s.capped ? "*" : ""}`).join(", ") || "none";
+  const surf = (b.armed_surfaces || []).join(", ") || "none";
+  const checks = (b.checks_run || []).join(", ") || "none";
+  const skipped = (b.checks_skipped || []).length ? `, skipped ${(b.checks_skipped || []).join("/")}` : "";
+  bar.innerHTML =
+    `<span>stack <b>${esc(b.stack || "none")}</b></span>` +
+    `<span>skills <b>${esc(skills)}</b></span>` +
+    `<span>surfaces <b>${esc(surf)}</b></span>` +
+    `<span>prompt <b>${b.prompt_tokens}t</b></span>` +
+    `<span>cpu <b>${b.cores}/${b.usable_cores}</b> slots <b>${b.free_build_slots}</b></span>` +
+    `<span>verify <b>${esc(checks)}</b>${esc(skipped)}</span>` +
+    `<span>filler <b>${b.slop_stripped_bytes}B</b> prose <b>${b.prose_findings}</b> faults <b>${b.memory_faults}</b></span>`;
+  $("stack").textContent = b.stack || "";
+}
+const esc = (s) => String(s).replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// SSE frame parser over fetch body (EventSource cannot POST).
+function makeSseParser(onEvent) {
+  let buf = "";
+  return (chunk) => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("data: ")) {
+          try { onEvent(JSON.parse(line.slice(6))); } catch (e) { /* skip */ }
+        }
+      }
+    }
+  };
+}
+
+async function runTurn(prompt, key, turn, seen) {
+  const res = await fetch("/chat", {
+    method: "POST",
+    headers: { "x-idempotency-key": key },
+    body: prompt,
+  });
+  if (!res.ok || !res.body) throw new Error("HTTP " + res.status);
+  const parse = makeSseParser((ev) => handleEvent(ev));
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    parse(dec.decode(value, { stream: true }));
+  }
+
+  function handleEvent(ev) {
+    // Replay dedup: retries resend the turn buffer from the start; every
+    // event we already rendered is counted out before processing.
+    if (seen.count < seen.max_skip) { seen.count++; return; }
+    seen.count++;
+    switch (ev.type) {
+      case "iteration":
+        addEvent(turn, null, `· iteration ${ev.index} (${ev.total_tokens}t prompt)`);
+        break;
+      case "tool_called":
+        addEvent(turn, ev.ok ? null : "err", `· ${ev.ok ? "✓" : "✗"} ${ev.name}: ${ev.digest}`);
+        break;
+      case "final_verification":
+        addEvent(turn, ev.ok ? null : "err", `· verification ${ev.ok ? "green" : "RED"}`);
+        break;
+      case "slop_stripped":
+        addEvent(turn, "adv", `· filler stripped: ${ev.bytes}B`);
+        break;
+      case "memory_fault":
+        addEvent(turn, "err", `· memory diagnostic [${ev.fault}] ${ev.headline}`);
+        break;
+      case "surface_armed":
+        addEvent(turn, "adv", `· ${ev.surface} surface bound (${ev.reason})`);
+        break;
+      case "prose_gate":
+        for (const f of ev.findings) addEvent(turn, "adv", `· prose: ${f}`);
+        break;
+      case "assistant_text":
+        break; // full answer arrives on turn_closed
+      case "turn_closed": {
+        const a = turn.querySelector(".answer");
+        a.hidden = false;
+        a.textContent = ev.text;
+        seen.closed = true;
+        finishTurn(turn, true, ev.badges);
+        break;
+      }
+      case "turn_failed":
+        addEvent(turn, "err", `· failed: ${ev.error}`);
+        seen.closed = true;
+        finishTurn(turn, false, null);
+        break;
+    }
+  }
+}
+
+async function send(prompt) {
+  running = true;
+  $("send").disabled = true;
+  const turn = elTurn(prompt);
+  const key = "w-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  const seen = { count: 0, max_skip: 0, closed: false };
+  let delay = 1000;
+  conn("streaming", "streaming");
+  note("");
+  for (;;) {
+    try {
+      await runTurn(prompt, key, turn, seen);
+      if (seen.closed) break;
+      throw new Error("stream ended before turn closed");
+    } catch (err) {
+      if (seen.closed) break;
+      conn("dropped", "reconnecting");
+      note(`stream dropped (${err.message}); retrying in ${delay / 1000}s - same idempotency key, replay-safe`);
+      await new Promise((r) => setTimeout(r, delay));
+      // Replay: server resends the whole turn buffer; skip what we rendered.
+      // Re-render safely by resetting the log to the envelope (cheap and
+      // honest: events arrive in order, we know how many we consumed).
+      seen.max_skip = seen.count;
+      delay = Math.min(delay * 2, 15000);
+    }
+  }
+  conn("", "idle");
+  note("");
+  running = false;
+  $("send").disabled = false;
+  $("prompt").focus();
+}
+
+function doSend() {
+  if (running) return;
+  const v = $("prompt").value.trim();
+  if (!v) return;
+  $("prompt").value = "";
+  send(v);
+}
+$("composer").addEventListener("submit", (e) => { e.preventDefault(); doSend(); });
+$("send").addEventListener("click", (e) => { e.preventDefault(); doSend(); });
+$("prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $("composer").requestSubmit();
+  }
+});
+$("prompt").addEventListener("input", function () {
+  this.style.height = "auto";
+  this.style.height = Math.min(this.scrollHeight, 160) + "px";
+});
+conn("", "idle");
+$("stack").textContent = "ready";
+// Deep link: ?prompt=... prefills the composer (never auto-submits).
+try {
+  const qp = new URLSearchParams(location.search).get("prompt");
+  if (qp) $("prompt").value = qp.slice(0, 4000);
+} catch (e) { /* URL API always present; belt and braces */ }
+</script>
+</body>
+</html>

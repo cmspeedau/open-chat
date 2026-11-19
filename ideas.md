@@ -2,7 +2,7 @@
 
 > **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, and the small-model bootstrap/skill onboarding engine. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
 >
-> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, and bootstrap workspace state using lightweight local models rather than costly frontier calls.
+> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, and offload operational triage/bootstrap tasks to lightweight local models rather than burning frontier tokens.
 
 ## Contents
 
@@ -12,7 +12,7 @@
 4. [Polyglot anti-slop architecture](#4-polyglot-anti-slop-architecture)
 5. [Unified orchestration lifecycle](#5-unified-orchestration-lifecycle)
 6. [Interfaces and implementation sketches](#6-interfaces-and-implementation-sketches)
-7. [OpenChat Dev Mode](#7-openchat-dev-mode)
+7. [OpenChat Dev Mode & small-model diagnostics offload](#7-openchat-dev-mode--small-model-diagnostics-offload)
 8. [OpenChat / OpenChamber rewrite direction](#8-openchat--openchamber-rewrite-direction)
 9. [Roadmap and integration sequence](#9-roadmap-and-integration-sequence)
 10. [Safety, failure modes, and design decisions](#10-safety-failure-modes-and-design-decisions)
@@ -26,14 +26,14 @@ The proposal combines four complementary layers: a lightweight zero-cloud onboar
 
 | Layer / Stage | When it acts | Primary responsibility | Reference concept |
 |---|---|---|---|
-| **0. Local Bootstrap Concierge** | First run, workspace open, stack detection | Hardware/VRAM discovery, credential onboarding, local skill synthesis | NousResearch `hermes-agent` (`setup_beat` / local flows) |
+| **0. Local Bootstrap Concierge & Diagnostic Coprocessor** | First run, workspace open, failure/incident triage | Hardware discovery, credential onboarding, local skill synthesis, log clustering & diagnostic drafting | NousResearch `hermes-agent` (`setup_beat` / local flows) |
 | **1. Prompt Skill Injector** | Before generation and after a patch | Select project/language rules, explain the required lifecycle mode, enforce compact search/replace or unified-diff output | `miqdadbadjuber/anti-slop`-style skill and `during` / `after` rules |
 | **2. Logit Backtracking Sampler** | Inside token generation | Detect disallowed phrase continuations and retry from a cached prefix with adjusted probabilities | `sam-paech/antislop-sampler` |
 | **3. Polyglot Tree-Sitter AST Gate** | After patch construction, before file write | Inspect syntax nodes for incomplete or suspicious constructs in supported languages | `skew202/antislop` / tree-sitter-based checks |
 
 The controls are deliberately layered:
 
-- **The bootstrap concierge** runs entirely on a lightweight local model (1B–3B parameters or embedded runtime), eliminating cold-start API dependencies and saving cloud token quotas during setup and onboarding.
+- **The bootstrap and diagnostic coprocessor** runs entirely on a lightweight local model (1B–3B parameters or embedded runtime), eliminating cold-start API dependencies, isolating dirty stack traces from the main context, and saving cloud token quotas during setup, onboarding, and incident triage.
 - **Prompt rules** guide intent and reduce unnecessary output, but remain probabilistic.
 - **A sampler** can suppress selected language patterns only when the inference runtime exposes token-level logits/state; ordinary hosted chat APIs may not support it.
 - **An AST gate** is deterministic over the parsed patch and can block known incomplete constructs, but is not a proof of correctness and should avoid policing ordinary application semantics as if they were universal truths.
@@ -58,24 +58,26 @@ OpenChat adopts an explicit two-tier model separation:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      Tier 0: Local Bootstrap Concierge                 │
+│             Tier 0: Local Bootstrap & Coprocessor (Small Model)        │
 │                                                                        │
 │  [Embedded / Fast Local Model: 1B–3B quantized (e.g. Qwen2.5-Coder)]   │
 │  • Hardware & GPU/VRAM capability probe                                │
 │  • Zero-cloud interactive onboarding cards (`setup_beat`)              │
 │  • Local credential & provider setup (Ollama, vLLM, Cloud API keys)    │
 │  • Workspace manifest detection & AST skill synthesis                  │
+│  • Dev Mode diagnostic triage, trace redaction & issue drafting        │
 └───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Bootstrap Complete
+                                    │ Bootstrap Complete / Hand-off
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                      Tier 1: Heavy Execution Engine                    │
 │                                                                        │
 │  [Cloud API (Claude 3.5, GPT-4o) OR Heavy Local Model (32B / 70B)]     │
+│  • Primary conversational coding & complex reasoning                   │
 │  • Layer 1: Prompt Skill Injector                                      │
 │  • Layer 2: Backtracking Sampler                                       │
 │  • Layer 3: Polyglot Tree-Sitter AST Diff Gate                         │
-│  • Headless Daemon Task Runner & Dev Mode Dispatcher                   │
+│  • Headless Daemon Task Runner & Tool Executor                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -373,7 +375,7 @@ Avoid “zero false positives” as a blanket guarantee. Optimize for high signa
  └───────────────┬──────────────┘
                  ▼
        Optional Dev Mode triage
-       (draft only; user confirms)
+       (drafted by small local model; user confirms)
 ```
 
 ### 5.2 State machine
@@ -441,7 +443,7 @@ In `open-chat`, these responsibilities map directly to workspace crates:
 
 | Lifecycle Phase | Responsible Crate | Key Functionality |
 |---|---|---|
-| **Bootstrap & Onboarding** | `crates/session` | Manages `setup_beat` state machine, executes hardware probe, orchestrates small local model flows. |
+| **Bootstrap & Diagnostic Coprocessor** | `crates/session` | Manages `setup_beat` state machine, hardware discovery, and executes small local model diagnostic triage. |
 | **Skill Index & Vector Store** | `crates/memory` | Stores synthesized `SKILL.md` contracts and project conventions using `rusqlite` + `sqlite-vec`. |
 | **Skill Synthesis & Tooling** | `crates/tools` | Runs compiler symbol extraction (`cargo doc`, `cargo check --message-format=json`) and AST sampling. |
 | **AST Inspection & Patching** | `crates/core` | Parses search/replace diffs in-memory, executes Tree-sitter queries, manages atomic commits. |
@@ -546,11 +548,45 @@ export async function validatePatch(
 
 ---
 
-## 7. OpenChat Dev Mode
+## 7. OpenChat Dev Mode & small-model diagnostics offload
 
-### 7.1 Product concept
+### 7.1 Product concept & main-model offload
 
-**Dev Mode** is an opt-in, self-monitoring diagnostic assistant within OpenChat. It observes operational failures, assembles a privacy-aware technical incident record, asks an AI to analyze likely causes, then prepares a **draft GitHub issue** for explicit user review. It is not an autonomous bug reporter and should never publish private logs or create an issue by default.
+**Dev Mode** is an opt-in, self-monitoring diagnostic assistant within OpenChat. When an operational failure occurs—such as a stream crash, recurring tool failure, or repeated AST gate rejection—**the main LLM does not consume its own context and cloud token budget to troubleshoot itself.**
+
+Instead, OpenChat **offloads diagnostics to the small local model (Tier 0)**:
+
+```text
+       ┌─────────────────────────────────────────────────────────┐
+       │                Tier 1: Main LLM Loop                    │
+       │  (Focuses 100% on user coding task; unaffected by logs) │
+       └────────────────────────────┬────────────────────────────┘
+                                    │ Incident Occurs
+                                    ▼
+       ┌─────────────────────────────────────────────────────────┐
+       │     crates/session: Dev Mode Diagnostic Ring Buffer     │
+       │  (Captures error code, sanitized trace, tool args)      │
+       └────────────────────────────┬────────────────────────────┘
+                                    │ Offload triage (Async / 0 cloud tokens)
+                                    ▼
+       ┌─────────────────────────────────────────────────────────┐
+       │        Tier 0: Small Local Model (Qwen/Llama 1B-3B)     │
+       │                                                         │
+       │  1. Clusters recurring error signatures                 │
+       │  2. Strips paths, secrets, & token dumps                │
+       │  3. Analyzes failure hypothesis & reproduction steps   │
+       │  4. Compiles structured GitHub Issue Draft              │
+       └────────────────────────────┬────────────────────────────┘
+                                    │
+                                    ▼
+                       User Confirmation Card in UI
+                    [Review] [Edit] [Create GitHub Issue]
+```
+
+#### Why offloading to the small model is essential:
+1. **Zero context pollution:** Long stack traces and error dumps are notoriously noisy. Injecting a 200-line crash trace into the main coding conversation burns valuable context tokens and distracts the primary model from the user's ongoing task.
+2. **Zero token cost:** Incident analysis and log clustering do not require high-end frontier reasoning; a fast 1.5B or 3B local model handles trace normalization, clustering, and issue drafting entirely offline at zero cost.
+3. **Survives cloud API disconnects:** If the failure is caused by an expired API key, network timeout, or provider 500 error, the main cloud model cannot diagnose the issue because it is unreachable. The local small model stays operational and diagnoses the outage locally.
 
 ### 7.2 Diagnostic sources and collection
 
@@ -584,18 +620,18 @@ interface DiagnosticEvent {
 }
 ```
 
-### 7.3 Root-cause analysis and issue draft generation
+### 7.3 Root-cause analysis and issue draft generation (Local Coprocessor)
 
-The diagnostic analyzer receives a **curated, bounded incident bundle**, not unrestricted access to local files. It should:
+The small local diagnostic analyzer receives a **curated, bounded incident bundle**, not unrestricted access to local files. It:
 
-1. Cluster repeated events by normalized signature and identify first/last occurrence.
-2. Distinguish confirmed facts, hypotheses, and missing evidence.
-3. Correlate component versions, event ordering, and retry outcomes without inventing details.
-4. Suggest a minimal reproduction and classify severity/impact, clearly marking estimates.
-5. Produce an issue draft with a title, environment fields only if explicitly available, observed/expected behavior, sanitized logs, and actionable reproduction steps.
-6. Include an evidence manifest so the user can see exactly what data is proposed for export.
+1. Clusters repeated events by normalized signature and identifies first/last occurrence.
+2. Distinguishes confirmed facts, hypotheses, and missing evidence.
+3. Correlates component versions, event ordering, and retry outcomes without inventing details.
+4. Suggests a minimal reproduction and classifies severity/impact, clearly marking estimates.
+5. Produces an issue draft with a title, environment fields only if explicitly available, observed/expected behavior, sanitized logs, and actionable reproduction steps.
+6. Includes an evidence manifest so the user can see exactly what data is proposed for export.
 
-The LLM output remains a **draft**. It must not select an arbitrary repository, infer a GitHub owner/repo, or include unsanitized data. The issue target must be selected by the user or resolved from an explicit workspace-to-repository configuration that is shown in the confirmation UI.
+The output remains a **draft**. It must not select an arbitrary repository, infer a GitHub owner/repo, or include unsanitized data. The issue target must be selected by the user or resolved from an explicit workspace-to-repository configuration shown in the confirmation UI.
 
 ### 7.4 User-confirmation card and workflow
 
@@ -605,6 +641,7 @@ Example Web UI card:
 ┌────────────────────────────────────────────────────────────────┐
 │ Dev Mode found a recurring tool failure                        │
 │ Signature: stream.parse.unexpected_eof  •  4 occurrences        │
+│ Triaged by: Local bootstrap model (0 cloud tokens used)        │
 │ Likely area: streaming response parser (hypothesis)              │
 │                                                                │
 │ Proposed issue: “Streaming parser fails on truncated event”     │
@@ -667,7 +704,8 @@ Guardrails:
 
 ```text
 runtime event → normalize → redact → bounded local store → deduplicate/cluster
-      → user-visible diagnosis card → AI analysis + draft → review/edit
+      → local small model triages incident (offloaded from main LLM)
+      → user-visible diagnosis card → review/edit
       → explicit approval → GitHub API/MCP → confirmed URL or recoverable error
 ```
 
@@ -776,11 +814,12 @@ These features should be centrally orchestrated by the daemon so multiple client
 - Mark unsupported providers clearly and preserve the same patch/AST checks for all providers.
 - Tune project-owned phrase lists and strengths; maintain an allowlist and quality regression corpus.
 
-### Phase 4 — Daemon, memory, and Dev Mode foundation
+### Phase 4 — Daemon, memory, and Dev Mode foundation (with local diagnostic offloading)
 
 - Build daemon session lifecycle (`crates/session`), local bounded diagnostics, redaction, retention/deletion settings, and memory scopes (`crates/memory`).
+- Offload incident clustering, stack-trace normalization, and failure root-cause analysis to Tier-0 local model.
 - Add operational diagnostics for AST rejections, tool failures, stream parse errors, and subagent timeouts.
-- Deliver draft-only root-cause summaries with confidence/evidence boundaries.
+- Deliver draft-only root-cause summaries with confidence/evidence boundaries without polluting main LLM context.
 
 ### Phase 5 — Confirmed GitHub dispatch and multi-client workflows
 
@@ -802,12 +841,12 @@ These features should be centrally orchestrated by the daemon so multiple client
 
 | Capability | What it can enforce | Important limitation |
 |---|---|---|
-| Bootstrap concierge | Zero-cost setup, hardware sizing, manifest detection | Limited reasoning capability compared to frontier models; restricted to onboarding beats. |
+| Bootstrap concierge & Diagnostic coprocessor | Zero-cost setup, hardware sizing, manifest detection, trace clustering & draft issue generation | Limited reasoning capability compared to frontier models; restricted to onboarding beats and structured diagnostic summarization. |
 | Prompt injector | Output format, preferred practices, selected project rules | Model may ignore or misunderstand instructions. |
 | Backtracking sampler | Selected phrase/token continuations in a hook-enabled generator | Requires logits and rewind state; many hosted APIs do not expose these. |
 | AST gate | Syntax-aware detection of configured constructs in changed content | Does not prove semantic correctness, safe behavior, or successful compilation. |
 | Compiler/tests | Project-defined correctness checks | Can be slow, incomplete, environment-dependent, or unavailable. |
-| Dev Mode analysis | Summarize and hypothesize from selected diagnostics | AI analysis can be wrong; issue draft must be verified and approved. |
+| Dev Mode analysis (small model) | Summarize and hypothesize from selected diagnostics | AI analysis can be wrong; issue draft must be verified and approved by user. |
 
 ### 10.2 False positives and exceptions
 

@@ -11,8 +11,13 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 libc = "0.2"
+notify = "8"
+openchat-memory = { path = "crates/memory" }
 openchat-governor = { path = "crates/governor" }
+openchat-watcher = { path = "crates/watcher" }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+sqlite-vec = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 toml = "0.9"

@@ -14,6 +14,8 @@ path = "src/main.rs"
 anyhow.workspace = true
 dirs = "6"
 openchat-governor.workspace = true
+openchat-memory.workspace = true
+openchat-watcher.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 toml.workspace = true

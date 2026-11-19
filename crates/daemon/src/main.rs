@@ -8,9 +8,15 @@ mod config;
 
 use anyhow::{Context, Result};
 use openchat_governor::Governor;
+use openchat_memory::MemoryStore;
+use openchat_watcher::{WatcherConfig, WorkspaceWatcher};
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::config::load;
+
+/// Dense tier dimensions. v1 pins one embedding model's width for the whole
+/// store; per-model migration lands with the LLM layer (Phase 2+).
+const VECTOR_DIMS: usize = 768;
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
@@ -57,11 +63,33 @@ async fn main() -> Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("failed to bind SIGTERM")?;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
+
+    // Embedded dual-tier memory lives in the project `.openchat/` dir.
+    let memory = MemoryStore::open(&cwd.join(".openchat").join("memory.sqlite"), VECTOR_DIMS)
+        .context("failed to open workspace memory")?;
+    tracing::info!(entries = memory.count()?, path = %cwd.join(".openchat/memory.sqlite").display(), "memory online");
+
+    // One shared, debounced watcher for the whole workspace.
+    let watcher = WorkspaceWatcher::start(WatcherConfig::new(vec![cwd.clone()]))
+        .context("failed to start workspace watcher")?;
+    tracing::info!("workspace watcher online");
+
+    // Watcher feed: today we only log stack-relevant files; the skill
+    // binder (Phase 3) subscribes to the same bus later.
+    let watch_pump = tokio::spawn(async move {
+        while let Some(event) = watcher.next().await {
+            tracing::debug!(path = %event.path.display(), kind = ?event.kind, "workspace change");
+        }
+    });
+
     tokio::select! {
         _ = sigterm.recv() => tracing::info!("SIGTERM received"),
         res = &mut ctrl_c => res.context("failed to bind SIGINT")?,
     }
     tracing::info!("openchatd shutting down");
+    watch_pump.abort();
+    // WAL hygiene on the way out so a crash never leaves a fat log.
+    memory.compact().context("final memory compaction failed")?;
     Ok(())
 }
 

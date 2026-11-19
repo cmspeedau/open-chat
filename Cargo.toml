@@ -12,8 +12,10 @@ license = "MIT"
 anyhow = "1"
 libc = "0.2"
 notify = "8"
-openchat-memory = { path = "crates/memory" }
+openchat-core = { path = "crates/core" }
 openchat-governor = { path = "crates/governor" }
+openchat-memory = { path = "crates/memory" }
+openchat-tools = { path = "crates/tools" }
 openchat-watcher = { path = "crates/watcher" }
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

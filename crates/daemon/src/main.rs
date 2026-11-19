@@ -3,12 +3,20 @@
 //! Starts the resource governor, logs the resolved host budget, and idles
 //! until SIGINT/SIGTERM. LLM/session plumbing arrives on top of this shell
 //! in later phases.
+//!
+//! Subcommand `exec -- <cmd...>` runs a single command through the same
+//! arbiter the agent loop will use: build slot (or `--light` to skip it),
+//! affinity pin, env thread caps, bounded output, one-line digest.
 
 mod config;
+
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use openchat_governor::Governor;
 use openchat_memory::MemoryStore;
+use openchat_tools::compact::ToolRecord;
+use openchat_tools::exec::{ExecRequest, TaskKind, ToolRunner};
 use openchat_watcher::{WatcherConfig, WorkspaceWatcher};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -28,21 +36,82 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
-
-    let mut args = std::env::args().skip(1);
-    let mut config_path: Option<std::path::PathBuf> = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--config" => {
-                let path = args.next().context("--config requires a path")?;
-                config_path = Some(path.into());
-            }
-            "--version" => {
-                println!("openchatd {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            other => anyhow::bail!("unknown argument {other:?} (expected --config or --version)"),
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    match argv.first().map(String::as_str) {
+        Some("--version") => {
+            println!("openchatd {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
         }
+        Some("exec") => exec_main(&argv[1..]).await,
+        _ => daemon_main(&argv).await,
+    }
+}
+
+/// Extract `--config <path>` (returns the path) and `--light` (returns
+/// whether it was present) from a mutable arg list.
+fn extract_flags(argv: &mut Vec<String>) -> (Option<PathBuf>, bool) {
+    let mut config = None;
+    if let Some(i) = argv.iter().position(|a| a == "--config")
+        && i + 1 < argv.len()
+    {
+        // Remove the value first so no index shifts before this line.
+        let value = argv.remove(i + 1);
+        argv.remove(i);
+        config = Some(PathBuf::from(value));
+    }
+    let light = argv.iter().position(|a| a == "--light").is_some_and(|i| {
+        argv.remove(i);
+        true
+    });
+    (config, light)
+}
+
+async fn exec_main(argv: &[String]) -> Result<()> {
+    let mut argv = argv.to_vec();
+    let (config_path, light) = extract_flags(&mut argv);
+    let sep = argv
+        .iter()
+        .position(|a| a == "--")
+        .context("missing `--` before command")?;
+    if sep + 1 >= argv.len() {
+        anyhow::bail!("usage: openchatd exec [--config PATH] [--light] -- <program> [args...]");
+    }
+    let program = argv[sep + 1].clone();
+    let args: Vec<String> = argv[sep + 2..].to_vec();
+
+    let cwd = std::env::current_dir().context("failed to resolve cwd")?;
+    let governor = Governor::new(load(&cwd, config_path.as_deref())?)
+        .context("failed to start resource governor")?;
+    let kind = if light {
+        TaskKind::Light
+    } else {
+        TaskKind::Build
+    };
+    let req = ExecRequest {
+        program,
+        args,
+        cwd: Some(cwd),
+        kind,
+        ..ExecRequest::new("", kind)
+    };
+    let runner = ToolRunner::new(&governor);
+    let report = runner.run(&req).await.context("exec failed")?;
+    let label = format!("{} {}", req.program, req.args.join(" "));
+    eprintln!("{}", ToolRecord::from_report(label, &report).digest());
+    // Pass the child's outcome through so CI wrappers see the real code
+    // (124 mirrors coreutils timeout convention).
+    std::process::exit(
+        report
+            .exit_code
+            .unwrap_or(if report.timed_out { 124 } else { 1 }),
+    );
+}
+
+async fn daemon_main(argv: &[String]) -> Result<()> {
+    let mut argv = argv.to_vec();
+    let (config_path, _light) = extract_flags(&mut argv);
+    if let Some(unknown) = argv.first() {
+        anyhow::bail!("unknown argument {unknown:?} (expected --config, --version, or `exec`)");
     }
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
@@ -106,5 +175,20 @@ mod tests {
         let governor = Governor::new(cfg).expect("default governor boots");
         assert!(governor.snapshot().cores >= 1);
         assert!(governor.snapshot().free_build_slots >= 1);
+    }
+
+    #[test]
+    fn flag_extraction_leaves_positionals_in_order() {
+        let mut argv = vec![
+            "--config".to_string(),
+            "/tmp/c.toml".into(),
+            "--light".into(),
+            "cargo".into(),
+            "check".into(),
+        ];
+        let (cfg, light) = extract_flags(&mut argv);
+        assert_eq!(cfg.unwrap().to_str().unwrap(), "/tmp/c.toml");
+        assert!(light);
+        assert_eq!(argv, ["cargo", "check"]);
     }
 }

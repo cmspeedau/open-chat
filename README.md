@@ -358,10 +358,10 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Bounded Memory Ring Buffers:** Zero-copy execution streams with strict circular buffer caps (256KB) preventing process RAM leaks and OOM kills.
 - [x] **Subagent Task Supervisor & Watchdog:** Async channel orchestration with timeout safety nets and automatic wake-up triggers to eliminate subagent hangs.
 - [x] **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse exact) + `sqlite-vec` (dense semantic) with automatic contradiction resolution and WAL hygiene.
-- [ ] **Dynamic Rolling Context Compactor:** Automated pruning of intermediate terminal logs and tool payloads into semantic one-line digests.
+- [x] **Dynamic Rolling Context Compactor:** Automated pruning of intermediate terminal logs and tool payloads into semantic one-line digests.
 
 ### Phase 2: Token Efficiency & Code Generation
-- [ ] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool eliminating full-file rewrites and cutting output tokens by ~80%.
+- [x] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool eliminating full-file rewrites and cutting output tokens by ~80%.
 - [ ] **Strict Anti-Slop `[during]` Mode Enforcement:** Automatic negative constraint injection to eliminate polite filler, pre-tool monologue, and post-code summaries.
 - [ ] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
 - [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.

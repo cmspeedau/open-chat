@@ -1,0 +1,18 @@
+[package]
+name = "openchat-tools"
+description = "Agent tool layer: governed command execution, surgical search/replace patching, rolling log compaction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+openchat-core.workspace = true
+openchat-governor.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }

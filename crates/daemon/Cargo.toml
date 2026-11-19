@@ -16,9 +16,11 @@ dirs = "6"
 openchat-governor.workspace = true
 openchat-memory.workspace = true
 openchat-session.workspace = true
+openchat-skills.workspace = true
 openchat-tools.workspace = true
 openchat-watcher.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 toml.workspace = true
 tracing.workspace = true

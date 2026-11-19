@@ -417,8 +417,8 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.
 
 ### Phase 3: 50+ Skill Scale & Stack Discovery
-- [ ] **Deterministic Stack Fingerprinter:** Real-time workspace scanner detecting active languages (`Cargo.toml`, `package.json`, `go.mod`, etc.).
-- [ ] **55+ Skill Index Registry:** YAML frontmatter parser and indexing engine mapping skills to languages, globs, dependencies, and execution modes.
+- [x] **Deterministic Stack Fingerprinter:** Real-time workspace scanner detecting active languages (`Cargo.toml`, `package.json`, `go.mod`, etc.).
+- [x] **55+ Skill Index Registry:** YAML frontmatter parser and indexing engine mapping skills to languages, globs, dependencies, and execution modes.
 - [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks with one-click `skill_bootstrap` authoring.
 
 ### Phase 4: Context Compositor & Observability

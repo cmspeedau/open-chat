@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
         }
         Some("exec") => exec_main(&argv[1..]).await,
         Some("chat") => chat_main(&argv[1..]).await,
+        Some("skills") => skills_main(&argv[1..]).await,
         _ => daemon_main(&argv).await,
     }
 }
@@ -86,7 +87,7 @@ async fn exec_main(argv: &[String]) -> Result<()> {
     let args: Vec<String> = argv[sep + 2..].to_vec();
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let (governor_config, _llm) = load(&cwd, config_path.as_deref())?;
+    let (governor_config, _llm, _skills) = load(&cwd, config_path.as_deref())?;
     let governor = Governor::new(governor_config).context("failed to start resource governor")?;
     let kind = if light {
         TaskKind::Light
@@ -125,7 +126,7 @@ async fn chat_main(argv: &[String]) -> Result<()> {
     }
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let (governor_config, llm) =
+    let (governor_config, llm, _skills) =
         load(&cwd, config_path.as_deref()).context("failed to load open-chat config")?;
     let api_key = std::env::var(&llm.api_key_env).unwrap_or_default();
     let provider = OpenAi::new(OpenAiConfig {
@@ -185,10 +186,99 @@ async fn chat_main(argv: &[String]) -> Result<()> {
         .map(|s| format!("{}={}", s.name, s.tokens))
         .collect::<Vec<_>>()
         .join(" ");
+    let slop = match outcome.slop_stripped_bytes {
+        0 => String::new(),
+        n => format!(" · {n} bytes of filler stripped"),
+    };
     eprintln!(
-        "· turn closed in {} iterations [{sections}]",
+        "· turn closed in {} iterations [{sections}]{slop}",
         outcome.iterations
     );
+    Ok(())
+}
+
+/// Fingerprint the workspace, bind the skill catalog, report gaps, and
+/// persist the `stack` fact into project memory (Phase 3 control surface).
+async fn skills_main(argv: &[String]) -> Result<()> {
+    let mut argv = argv.to_vec();
+    let (config_path, _light) = extract_flags(&mut argv);
+    let json = argv.iter().any(|a| a == "--json");
+
+    let cwd = std::env::current_dir().context("failed to resolve cwd")?;
+    let (_governor_config, _llm, skills_cfg) =
+        load(&cwd, config_path.as_deref()).context("failed to load open-chat config")?;
+    let mut roots: Vec<std::path::PathBuf> = skills_cfg.paths;
+    roots.push(cwd.join(".openchat").join("skills"));
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home.join(".openchat").join("skills"));
+    }
+
+    let fp = openchat_skills::fingerprint(&cwd);
+    let registry = openchat_skills::load_roots(&roots);
+    let (bindings, gaps) = openchat_skills::bind(&fp, &registry);
+
+    if json {
+        let out = serde_json::json!({
+            "stack": fp.languages.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
+            "files_scanned": fp.files_scanned,
+            "registry_size": registry.len(),
+            "roots": roots,
+            "active_skills": bindings.iter().map(|b| serde_json::json!({
+                "id": b.skill.id, "reason": b.reason, "tokens": b.skill.tokens,
+                "explicit_triggers": b.skill.explicit_triggers,
+            })).collect::<Vec<_>>(),
+            "gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).context("serialize")?
+        );
+    } else {
+        let tag = fp.stack_tag();
+        println!(
+            "stack: {} ({} files scanned, registry {} skills from {} roots)",
+            if tag.is_empty() { "none" } else { &tag },
+            fp.files_scanned,
+            registry.len(),
+            roots.len(),
+        );
+        for b in &bindings {
+            println!(
+                "  {:<24} {:>5} tok  {}",
+                b.skill.id, b.skill.tokens, b.reason
+            );
+        }
+        if gaps.is_empty() {
+            println!("gaps: none");
+        } else {
+            for g in &gaps {
+                println!(
+                    "gap: no skill for {} -> author .openchat/skills/{}/SKILL.md",
+                    g.language.as_str(),
+                    g.language.as_str()
+                );
+            }
+        }
+    }
+
+    // Persist to project memory when we detected something; the compositor
+    // then recalls the stack into future turns automatically.
+    if !fp.languages.is_empty() {
+        let store = MemoryStore::open(&cwd.join(".openchat").join("memory.sqlite"), VECTOR_DIMS)
+            .context("failed to open workspace memory")?;
+        store
+            .store(&openchat_memory::MemoryEntry {
+                scope: openchat_memory::MemoryScope::Project,
+                category: "stack".into(),
+                key: "stack".into(),
+                value: fp.stack_tag(),
+                embedding: None,
+            })
+            .context("failed to record stack in memory")?;
+        if !json {
+            eprintln!("· stack recorded to project memory");
+        }
+    }
     Ok(())
 }
 
@@ -201,7 +291,7 @@ async fn daemon_main(argv: &[String]) -> Result<()> {
         );
     }
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let (governor_config, _llm) =
+    let (governor_config, _llm, _skills) =
         load(&cwd, config_path.as_deref()).context("failed to load open-chat config")?;
     let governor = Governor::new(governor_config).context("failed to start resource governor")?;
 

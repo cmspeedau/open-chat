@@ -7,27 +7,34 @@
 
 use crate::provider::ChatMessage;
 
-/// Strict `[during]` guardrails, injected into the system section of every
-/// request: the negative constraints that make output surgical rather than
-/// conversational. This is the enforcement point for Phase 2 item 2.
-pub const ANTI_SLOP_DURING: &str = "\
-WORKING MODE [during]: surgical, low-output, high-signal.
-- Change files ONLY through the apply_patch tool with SEARCH/REPLACE blocks. \
-Never emit full file contents, in chat or in tool arguments.
-- No pleasantries, no pre-tool monologue, no post-work summaries. One short \
-line of result plus evidence is the entire chat output.
-- After any patch, treat the project's verification command as mandatory: it \
-runs automatically before the turn closes; a failing verification keeps the \
-turn open until fixed.
-- Do not claim anything about code you did not execute or read.
-- When unsure of a file's current content, read it with run_command (cat/sed), \
-never recall it from the conversation.";
+/// The four engine invariants, compiled into the binary and injected into
+/// System Frame #0 of every request (README: "Anti-Slop Law"). Not
+/// user- or model-overridable: the compositor puts it before every other
+/// section, and the tools enforce it independently of what the model
+/// believes the rules are.
+pub const ANTI_SLOP_LAW: &str = r#"[INVIOLABLE ENGINE LAW - ZERO-TOLERANCE ANTI-SLOP]
+1. ZERO CONVERSATIONAL FILLER: Never output pleasantries, confirmations ("Sure, I can help!"),
+   pre-action monologues ("I will now check..."), or post-action summaries.
+2. SURGICAL DIFF ONLY: Full-file rewrites are strictly forbidden. Only emit minimal
+   search-and-replace hunks.
+3. SILENT VERIFICATION: Execute compiler and linter checks autonomously. Never ask the user
+   to test what you can test.
+4. CODE OVER EXPLANATION: If code was requested, emit ONLY code diffs and compiler
+   verification.
+ENFORCEMENT: the engine strips leading filler from your output before the user sees it,
+and patch tools reject whole-file overwrites with a SlopViolation error. Write for the
+filter: diffs and one-line results only."#;
 
 /// The workspace-conventions block: short, factual, project-specific.
 pub const BASE_SYSTEM: &str = "\
 You are open-chat, an agent running on the user's own machine through a \
 governed daemon. Tools are CPU-capped and build-serialized; assume shared \
-resources and queue rather than retry storms.";
+resources and queue rather than retry storms.
+Operating notes under the law above:
+- Change files ONLY through the apply_patch tool with SEARCH/REPLACE blocks.
+- When unsure of a file's current content, read it with run_command (cat/sed), \
+never recall it from the conversation.
+- A failing verification keeps the turn open; expect the engine to re-run it.";
 
 /// What survived assembly, per section, for telemetry and debugging.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,9 +79,11 @@ impl Compositor {
         history: &[ChatMessage],
         user: &str,
     ) -> Composed {
-        let mut system = String::from(BASE_SYSTEM);
+        // System Frame #0: the law leads the first system message, above
+        // conventions and above any caller-supplied extra context.
+        let mut system = String::from(ANTI_SLOP_LAW);
         system.push('\n');
-        system.push_str(ANTI_SLOP_DURING);
+        system.push_str(BASE_SYSTEM);
         if !extra_system.is_empty() {
             system.push('\n');
             system.push_str(extra_system);
@@ -212,7 +221,7 @@ mod tests {
         let c = Compositor::new(100_000);
         let out = c.compose("", &[], "", &[], "hello");
         let s = system_text(&out);
-        assert!(s.contains(ANTI_SLOP_DURING), "guardrails missing");
+        assert!(s.starts_with(ANTI_SLOP_LAW), "law must be frame 0");
         assert!(s.contains(BASE_SYSTEM));
         assert_eq!(out.messages.last().unwrap().role, Role::User);
         assert_eq!(out.messages.last().unwrap().content, "hello");

@@ -18,6 +18,21 @@ struct RawConfig {
     resources: RawResources,
     #[serde(default)]
     llm: RawLlm,
+    #[serde(default)]
+    skills: RawSkills,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSkills {
+    paths: Option<Vec<String>>,
+}
+
+/// Extra skill catalog roots from `[skills] paths = [...]`. Project and
+/// user `.openchat/skills` defaults are appended by the caller.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillsSettings {
+    pub paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -155,6 +170,15 @@ impl RawConfig {
                 .unwrap_or(base.max_total_tokens),
         }
     }
+
+    fn merge_skills(self, base: SkillsSettings) -> SkillsSettings {
+        match self.skills.paths.filter(|v| !v.is_empty()) {
+            Some(paths) => SkillsSettings {
+                paths: paths.into_iter().map(PathBuf::from).collect(),
+            },
+            None => base,
+        }
+    }
 }
 
 /// Discover config files: project `.openchat/` over user `~/.openchat/`.
@@ -175,23 +199,28 @@ pub fn discover(start_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Load the effective configs, later files overriding earlier ones.
-pub fn load(start_dir: &Path, explicit: Option<&Path>) -> Result<(GovernorConfig, LlmSettings)> {
+pub fn load(
+    start_dir: &Path,
+    explicit: Option<&Path>,
+) -> Result<(GovernorConfig, LlmSettings, SkillsSettings)> {
     let files = match explicit {
         Some(path) => vec![path.to_path_buf()],
         None => discover(start_dir),
     };
     let mut config = GovernorConfig::default();
     let mut llm = LlmSettings::default();
+    let mut skills = SkillsSettings::default();
     for path in files {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let raw: RawConfig =
             toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
         config = raw.clone().merge_resources(config)?;
-        llm = raw.merge_llm(llm);
+        llm = raw.clone().merge_llm(llm);
+        skills = raw.merge_skills(skills);
         tracing::info!(path = %path.display(), "config layer applied");
     }
-    Ok((config, llm))
+    Ok((config, llm, skills))
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::compositor::{Composed, Compositor};
 use crate::provider::{ChatMessage, ChatRequest, Provider, ToolCall};
+use crate::slop::strip_leading_slop;
 use crate::tools::{ApplyPatchTool, Registry};
 
 #[derive(Debug, thiserror::Error)]
@@ -53,6 +54,9 @@ pub struct AgentOutcome {
     pub records: Vec<ToolRecord>,
     /// The last composition, for the token-telemetry report.
     pub composed: Composed,
+    /// Bytes of conversational filler the stream interceptor removed from
+    /// model output this turn (Anti-Slop Law telemetry).
+    pub slop_stripped_bytes: usize,
 }
 
 pub struct Agent<'a> {
@@ -107,6 +111,7 @@ impl<'a> Agent<'a> {
         let mut records: Vec<ToolRecord> = Vec::new();
         let mut last_composed: Option<Composed> = None;
         let mut final_text: Option<String> = None;
+        let mut slop_stripped_bytes = 0usize;
         let mut iterations = 0usize;
 
         for iteration in 1..=self.max_iterations {
@@ -131,10 +136,17 @@ impl<'a> Agent<'a> {
                 })
                 .await?;
 
-            if !resp.text.is_empty() {
-                on_event(&AgentEvent::AssistantText(&resp.text));
+            // Enforcement point 2: leading filler never reaches history,
+            // events, or the user; the byte count is kept as telemetry.
+            let (clean_text, stripped) = strip_leading_slop(&resp.text);
+            if stripped > 0 {
+                slop_stripped_bytes += stripped;
+                tracing::warn!(bytes = stripped, "slop interceptor stripped model filler");
             }
-            history.push(assistant_message(&resp.text, resp.tool_calls.clone()));
+            if !clean_text.is_empty() {
+                on_event(&AgentEvent::AssistantText(clean_text));
+            }
+            history.push(assistant_message(clean_text, resp.tool_calls.clone()));
 
             if resp.tool_calls.is_empty() {
                 match self.close_gate().await {
@@ -142,7 +154,7 @@ impl<'a> Agent<'a> {
                         if let Some(ok) = ok_flag {
                             on_event(&AgentEvent::FinalVerification { ok });
                         }
-                        final_text = Some(resp.text);
+                        final_text = Some(clean_text.to_owned());
                         break;
                     }
                     Gate::Repair(record) => {
@@ -185,6 +197,7 @@ impl<'a> Agent<'a> {
                 iterations,
                 records,
                 composed,
+                slop_stripped_bytes,
             }),
             None => Err(AgentError::BudgetExhausted(self.max_iterations)),
         }
@@ -360,7 +373,28 @@ mod tests {
         assert!(
             seen[0].messages[0]
                 .content
-                .contains("WORKING MODE [during]")
+                .contains("INVIOLABLE ENGINE LAW")
+        );
+    }
+
+    #[tokio::test]
+    async fn filler_is_stripped_from_final_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = harness(dir.path(), None).await;
+        let provider = Scripted::new(vec![text_reply(
+            "Sure! I can certainly help with that. The parser now rejects ambiguous hunks.",
+        )]);
+        let out = Agent::new(&provider, &registry, None)
+            .run("status?", &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(out.text, "The parser now rejects ambiguous hunks.");
+        assert!(out.slop_stripped_bytes > 30, "{}", out.slop_stripped_bytes);
+        let seen = provider.seen.lock().await;
+        let final_msgs = &seen[seen.len() - 1].messages;
+        assert!(
+            !final_msgs.iter().any(|m| m.content.contains("Sure!")),
+            "stripped filler must not round-trip upstream"
         );
     }
 

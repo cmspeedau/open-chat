@@ -919,9 +919,11 @@ dependencies = [
  "openchat-governor",
  "openchat-memory",
  "openchat-session",
+ "openchat-skills",
  "openchat-tools",
  "openchat-watcher",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
@@ -964,6 +966,13 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "openchat-skills"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

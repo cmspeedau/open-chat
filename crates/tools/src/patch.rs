@@ -28,6 +28,10 @@ use thiserror::Error;
 pub enum PatchError {
     #[error("malformed patch at line {line}: {why}")]
     Malformed { line: usize, why: &'static str },
+    #[error(
+        "SlopViolation: a single hunk rewrites the whole {lines}-line file {path}; emit minimal surgical hunks instead"
+    )]
+    SlopViolation { path: String, lines: usize },
     #[error("unsafe path {0:?}: patches must address files inside the workspace")]
     UnsafePath(String),
     #[error("search block not found in {path} (first line: {head:?})")]
@@ -194,17 +198,34 @@ pub enum Planned {
     Delete,
 }
 
+/// Anti-Slop Law enforcement point 3: one hunk whose SEARCH is the entire
+/// file is a full-file rewrite in disguise. Tiny files (dotfiles, one-shot
+/// configs) may legitimately be written wholesale, so the ban starts above
+/// this line count.
+pub const WHOLE_FILE_MIN_LINES: usize = 24;
+
 /// Apply hunks to `content` all-or-nothing: the first failing hunk aborts
 /// the whole file, so a partial match can never land.
 ///
 /// # Errors
 ///
-/// [`PatchError::NotFound`] / [`PatchError::Ambiguous`] per hunk rules.
+/// [`PatchError::NotFound`] / [`PatchError::Ambiguous`] per hunk rules,
+/// [`PatchError::SlopViolation`] for whole-file rewrites of substantial
+/// files.
 pub fn apply_hunks(path: &str, content: &str, hunks: &[Hunk]) -> Result<Planned, PatchError> {
     let mut text = content.to_owned();
     for hunk in hunks {
         if hunk.delete {
             return Ok(Planned::Delete);
+        }
+        if text.lines().count() >= WHOLE_FILE_MIN_LINES
+            && !hunk.search.trim().is_empty()
+            && hunk.search.trim() == text.trim()
+        {
+            return Err(PatchError::SlopViolation {
+                path: path.into(),
+                lines: text.lines().count(),
+            });
         }
         let start = locate(path, &text, &hunk.search)?;
         text.replace_range(start.0..start.1, &hunk.replace);
@@ -531,6 +552,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PatchError::NotFound { .. }));
+    }
+
+    #[test]
+    fn whole_file_rewrite_of_big_file_is_slop_violation() {
+        let content: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let err = apply_hunks(
+            "big.rs",
+            &content,
+            &[Hunk::replace(content.trim_end(), "totally new content")],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, PatchError::SlopViolation { lines: 30, .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("SlopViolation"), "{err}");
+        // A surgical hunk in the same big file is fine.
+        apply_hunks(
+            "big.rs",
+            &content,
+            &[Hunk::replace("line 7", "line 7 fixed")],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tiny_files_may_be_written_wholesale() {
+        let content = "a\nb\nc\n";
+        let planned = apply_hunks(".env", content, &[Hunk::replace("a\nb\nc", "X=1")]).unwrap();
+        assert!(matches!(planned, Planned::Modify(s) if s == "X=1\n"));
     }
 
     #[test]

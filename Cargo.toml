@@ -18,6 +18,7 @@ openchat-governor = { path = "crates/governor" }
 openchat-memory = { path = "crates/memory" }
 openchat-session = { path = "crates/session" }
 openchat-skills = { path = "crates/skills" }
+openchat-telegram = { path = "crates/telegram" }
 openchat-tools = { path = "crates/tools" }
 openchat-watcher = { path = "crates/watcher" }
 reqwest = { version = "0.13", features = ["json", "stream"] }

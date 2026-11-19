@@ -6,6 +6,7 @@
 //! - `chat "<prompt>"`: one agent turn, printing the live event stream
 //! - `skills [--json]`: fingerprint, bind, gap report, stack memory sync
 //! - `serve [--bind ADDR]`: HTTP/SSE front (GET /healthz /status, POST /chat)
+//! - `telegram`: Telegram bot gateway (allowlisted chats, /status, /cores)
 //! - `--version`
 
 mod config;
@@ -47,6 +48,7 @@ async fn main() -> Result<()> {
         Some("chat") => chat_main(&argv[1..]).await,
         Some("skills") => skills_main(&argv[1..]).await,
         Some("serve") => serve_main(&argv[1..]).await,
+        Some("telegram") => telegram_main(&argv[1..]).await,
         _ => daemon_main(&argv).await,
     }
 }
@@ -84,7 +86,7 @@ async fn exec_main(argv: &[String]) -> Result<()> {
     let args: Vec<String> = argv[sep + 2..].to_vec();
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let (governor_config, _llm, _skills) = load(&cwd, config_path.as_deref())?;
+    let (governor_config, _llm, _skills, _telegram) = load(&cwd, config_path.as_deref())?;
     let governor = Governor::new(governor_config).context("failed to start resource governor")?;
     let kind = if light {
         TaskKind::Light
@@ -337,6 +339,60 @@ async fn serve_main(argv: &[String]) -> Result<()> {
         .await
         .with_context(|| format!("failed to bind {bind}"))?;
     serve::serve(engine, Arc::new(serve::Hub::new()), listener).await
+}
+
+/// Mobile control plane: long-poll Telegram, run allowed chats' text as
+/// agent turns, expose /status and /cores for live governor control.
+async fn telegram_main(argv: &[String]) -> Result<()> {
+    let mut argv = argv.to_vec();
+    let (config_path, _light) = extract_flags(&mut argv);
+    if !argv.is_empty() {
+        anyhow::bail!("usage: openchatd telegram [--config PATH]");
+    }
+    let cwd = std::env::current_dir().context("failed to resolve cwd")?;
+    let engine = Arc::new(Engine::build(&cwd, config_path.as_deref())?);
+    let token = std::env::var(&engine.telegram.token_env).with_context(|| {
+        format!(
+            "{} is not set; create a bot with @BotFather and export its token",
+            engine.telegram.token_env
+        )
+    })?;
+    anyhow::ensure!(
+        !engine.telegram.chat_ids.is_empty(),
+        "[telegram] chat_ids is empty: refusing to expose an agent to any chat; \
+         find your id via @userinfobot and list it in .openchat/config.toml"
+    );
+    let cfg = openchat_telegram::TelegramConfig {
+        api_base: engine.telegram.api_base.clone(),
+        long_poll_seconds: 25,
+        ..openchat_telegram::TelegramConfig::new(token, engine.telegram.chat_ids.clone())
+    };
+    let bridge = openchat_telegram::Bridge::new(
+        cfg,
+        Arc::clone(&engine) as Arc<dyn openchat_telegram::EnginePort>,
+        Arc::new(engine::MemoryOffsetStore::new(Arc::clone(&engine.store))),
+    )
+    .context("telegram bridge refused to start")?;
+
+    let mut sigterm = signal(SignalKind::terminate()).context("failed to bind SIGTERM")?;
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    tracing::info!(
+        chats = ?engine.telegram.chat_ids,
+        base = %engine.telegram.api_base,
+        "telegram bridge online"
+    );
+    let shutdown = async {
+        tokio::select! {
+            _ = sigterm.recv() => tracing::info!("SIGTERM received"),
+            res = &mut ctrl_c => {
+                res.ok();
+                tracing::info!("SIGINT received");
+            }
+        }
+    };
+    bridge.run(shutdown).await;
+    Ok(())
 }
 
 async fn daemon_main(argv: &[String]) -> Result<()> {

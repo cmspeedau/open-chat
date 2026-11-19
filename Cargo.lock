@@ -920,6 +920,7 @@ dependencies = [
  "openchat-memory",
  "openchat-session",
  "openchat-skills",
+ "openchat-telegram",
  "openchat-tools",
  "openchat-watcher",
  "reqwest",
@@ -975,6 +976,17 @@ name = "openchat-skills"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "openchat-telegram"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "tokio",
  "tracing",
 ]
 

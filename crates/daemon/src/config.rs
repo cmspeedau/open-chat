@@ -20,6 +20,35 @@ struct RawConfig {
     llm: RawLlm,
     #[serde(default)]
     skills: RawSkills,
+    #[serde(default)]
+    telegram: RawTelegram,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTelegram {
+    token_env: Option<String>,
+    chat_ids: Option<Vec<i64>>,
+    api_base: Option<String>,
+}
+
+/// Telegram gateway settings. The key lives in the named env var, never
+/// in the file; `chat_ids` is the hard allowlist the bridge demands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelegramSettings {
+    pub token_env: String,
+    pub chat_ids: Vec<i64>,
+    pub api_base: String,
+}
+
+impl Default for TelegramSettings {
+    fn default() -> Self {
+        Self {
+            token_env: "TELEGRAM_BOT_TOKEN".into(),
+            chat_ids: Vec::new(),
+            api_base: "https://api.telegram.org".into(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -206,6 +235,24 @@ impl RawConfig {
                 .unwrap_or(base.total_max_tokens),
         }
     }
+
+    fn merge_telegram(self, base: TelegramSettings) -> TelegramSettings {
+        let t = self.telegram;
+        TelegramSettings {
+            token_env: t
+                .token_env
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.token_env),
+            chat_ids: t
+                .chat_ids
+                .filter(|v| !v.is_empty())
+                .unwrap_or(base.chat_ids),
+            api_base: t
+                .api_base
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.api_base),
+        }
+    }
 }
 
 /// Discover config files: project `.openchat/` over user `~/.openchat/`.
@@ -229,7 +276,12 @@ pub fn discover(start_dir: &Path) -> Vec<PathBuf> {
 pub fn load(
     start_dir: &Path,
     explicit: Option<&Path>,
-) -> Result<(GovernorConfig, LlmSettings, SkillsSettings)> {
+) -> Result<(
+    GovernorConfig,
+    LlmSettings,
+    SkillsSettings,
+    TelegramSettings,
+)> {
     let files = match explicit {
         Some(path) => vec![path.to_path_buf()],
         None => discover(start_dir),
@@ -237,6 +289,7 @@ pub fn load(
     let mut config = GovernorConfig::default();
     let mut llm = LlmSettings::default();
     let mut skills = SkillsSettings::default();
+    let mut telegram = TelegramSettings::default();
     for path in files {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -244,10 +297,11 @@ pub fn load(
             toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
         config = raw.clone().merge_resources(config)?;
         llm = raw.clone().merge_llm(llm);
-        skills = raw.merge_skills(skills);
+        skills = raw.clone().merge_skills(skills);
+        telegram = raw.merge_telegram(telegram);
         tracing::info!(path = %path.display(), "config layer applied");
     }
-    Ok((config, llm, skills))
+    Ok((config, llm, skills, telegram))
 }
 
 #[cfg(test)]
@@ -352,5 +406,21 @@ verify_command = ["cargo", "check", "--workspace"]
     fn unknown_llm_key_rejected() {
         let err = toml::from_str::<RawConfig>("[llm]\ntemperature_9000 = 1\n").unwrap_err();
         assert!(err.to_string().contains("temperature_9000"), "{err}");
+    }
+
+    #[test]
+    fn telegram_section_layers() {
+        let raw: RawConfig = toml::from_str(
+            "[telegram]\nchat_ids = [12345, -678]\napi_base = \"http://127.0.0.1:8081\"\n",
+        )
+        .unwrap();
+        let t = raw.merge_telegram(TelegramSettings::default());
+        assert_eq!(
+            t.chat_ids,
+            vec![12345, -678],
+            "negative group ids must survive"
+        );
+        assert_eq!(t.api_base, "http://127.0.0.1:8081");
+        assert_eq!(t.token_env, "TELEGRAM_BOT_TOKEN");
     }
 }

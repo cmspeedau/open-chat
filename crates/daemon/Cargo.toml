@@ -17,6 +17,7 @@ openchat-governor.workspace = true
 openchat-memory.workspace = true
 openchat-session.workspace = true
 openchat-skills.workspace = true
+openchat-telegram.workspace = true
 openchat-tools.workspace = true
 openchat-watcher.workspace = true
 serde.workspace = true

@@ -12,10 +12,12 @@ use openchat_session::agent::{Agent, AgentError, AgentEvent, AgentOutcome};
 use openchat_session::events::{Badges, SkillBadge, TurnEvent};
 use openchat_session::provider::{OpenAi, OpenAiConfig};
 use openchat_session::tools::{SharedMemory, standard_registry};
+use openchat_telegram as tg;
+use openchat_telegram::EnginePort;
 use serde_json::json;
 use tokio::sync::broadcast;
 
-use crate::config::{LlmSettings, SkillsSettings, load};
+use crate::config::{LlmSettings, SkillsSettings, TelegramSettings, load};
 
 /// Dense tier dimensions. v1 pins one embedding model's width for the whole
 /// store; per-model migration lands with the LLM layer.
@@ -27,6 +29,7 @@ pub struct Engine {
     pub store: SharedMemory,
     pub llm: LlmSettings,
     pub skills: SkillsSettings,
+    pub telegram: TelegramSettings,
 }
 
 /// Skill catalog search roots: configured paths, then project-local, then
@@ -42,7 +45,7 @@ pub fn skill_roots(cwd: &Path, cfg: &SkillsSettings) -> Vec<PathBuf> {
 
 impl Engine {
     pub fn build(cwd: &Path, config_path: Option<&Path>) -> Result<Self> {
-        let (governor_config, llm, skills) =
+        let (governor_config, llm, skills, telegram) =
             load(cwd, config_path).context("failed to load open-chat config")?;
         let governor =
             Arc::new(Governor::new(governor_config).context("failed to start resource governor")?);
@@ -56,6 +59,7 @@ impl Engine {
             store,
             llm,
             skills,
+            telegram,
         })
     }
 
@@ -183,6 +187,88 @@ impl Engine {
             "active_skills": bindings.iter().map(|b| b.skill.id.as_str()).collect::<Vec<_>>(),
             "skill_gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
             "llm_model": self.llm.model,
+        })
+    }
+}
+
+/// Telegram-facing view of the engine: turns report progress lines as
+/// they happen so the bridge can edit its live status message.
+impl EnginePort for Engine {
+    fn run_turn(
+        &self,
+        prompt: String,
+        progress: tokio::sync::mpsc::UnboundedSender<String>,
+    ) -> tg::BoxFuture<'_, std::result::Result<String, String>> {
+        Box::pin(async move {
+            let mut on_event = |ev: &AgentEvent<'_>| {
+                let line = match ev {
+                    AgentEvent::Iteration { index, composed } => {
+                        format!("… iteration {index} ({}t prompt)", composed.total_tokens)
+                    }
+                    AgentEvent::ToolCalled { name, ok, digest } => {
+                        format!("{} {name}: {digest}", if *ok { "✓" } else { "✗" })
+                    }
+                    AgentEvent::FinalVerification { ok } => format!(
+                        "verification {}",
+                        if *ok { "green" } else { "RED, repair demanded" }
+                    ),
+                    AgentEvent::AssistantText(_) => return,
+                };
+                let _ = progress.send(line);
+            };
+            match Engine::run_turn(self, &prompt, None, &mut on_event).await {
+                Ok(out) => Ok(out.text),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    }
+
+    fn status_json(&self) -> tg::BoxFuture<'_, serde_json::Value> {
+        Box::pin(Engine::status_json(self))
+    }
+
+    fn set_cores(&self, spec: String) -> std::result::Result<String, String> {
+        Engine::set_cores(self, &spec)
+    }
+}
+
+/// Update offset persisted in project memory: survives restarts alongside
+/// everything else the daemon remembers.
+pub struct MemoryOffsetStore {
+    store: SharedMemory,
+}
+
+impl MemoryOffsetStore {
+    #[must_use]
+    pub const fn new(store: SharedMemory) -> Self {
+        Self { store }
+    }
+}
+
+impl tg::OffsetStore for MemoryOffsetStore {
+    fn load(&self) -> tg::BoxFuture<'_, i64> {
+        Box::pin(async {
+            let store = self.store.lock().await;
+            match store.get(openchat_memory::MemoryScope::Project, "telegram-offset") {
+                Ok(Some(entry)) => entry.value.parse().unwrap_or(0),
+                _ => 0,
+            }
+        })
+    }
+
+    fn save(&self, offset: i64) -> tg::BoxFuture<'_, ()> {
+        Box::pin(async move {
+            let store = self.store.lock().await;
+            let entry = openchat_memory::MemoryEntry {
+                scope: openchat_memory::MemoryScope::Project,
+                category: "telegram".into(),
+                key: "telegram-offset".into(),
+                value: offset.to_string(),
+                embedding: None,
+            };
+            if let Err(e) = store.store(&entry) {
+                tracing::warn!(error = %e, "telegram offset persist failed");
+            }
         })
     }
 }

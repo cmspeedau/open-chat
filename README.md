@@ -429,5 +429,5 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.
 - [ ] **Lightweight Virtualized Web UI:** Collapsed envelope rendering preventing 1.2GB+ DOM overload and input stutter in long sessions.
 - [ ] **Interactive Dynamic Core Throttling Controls:** Web UI slider and bot chat commands (`/cores <n>`, `/set cores <n>`) for real-time adjustments without restarting.
-- [ ] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
+- [x] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
 - [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.

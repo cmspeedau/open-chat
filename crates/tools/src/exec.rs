@@ -63,8 +63,11 @@ impl ExecRequest {
 /// truncation notice when older bytes were evicted.
 #[derive(Debug, Clone)]
 pub struct ExecReport {
-    /// Child exit code, `None` when killed by timeout.
+    /// Child exit code, `None` when killed by a signal or by timeout.
     pub exit_code: Option<i32>,
+    /// Signal number that killed the child (Unix), when applicable. The
+    /// memory diagnostics trap keys on SIGKILL/SIGSEGV/SIGABRT here.
+    pub signal: Option<i32>,
     pub timed_out: bool,
     pub duration: Duration,
     pub stdout: String,
@@ -164,12 +167,13 @@ impl<'g> ToolRunner<'g> {
             Err(_elapsed) => child.wait().await,
         };
         let (stdout_buf, stderr_buf) = pump.await.expect("pump task never panics");
-        let exit_code = match status {
-            Ok(st) => st.code(),
-            Err(_) => None,
+        let (exit_code, signal) = match status {
+            Ok(st) => (st.code(), exit_signal(&st)),
+            Err(_) => (None, None),
         };
         Ok(ExecReport {
             exit_code,
+            signal,
             timed_out,
             duration: started.elapsed(),
             stdout: stdout_buf.to_string_lossy(),
@@ -178,6 +182,18 @@ impl<'g> ToolRunner<'g> {
             stderr_dropped: stderr_buf.dropped_bytes(),
         })
     }
+}
+
+/// Signal number that terminated the child, where the platform reports one.
+#[cfg(unix)]
+fn exit_signal(st: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    st.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_st: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
 
 async fn pump_stream<R: AsyncRead + Unpin>(reader: R, cap: usize) -> RingBuffer {
@@ -295,6 +311,21 @@ mod tests {
             "serialized builds took {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn signal_death_is_captured() {
+        // The diagnostics trap needs the raw signal, not just "no exit
+        // code": make the child SIGKILL itself and check we see it.
+        let g = governor(2);
+        let runner = ToolRunner::new(&g);
+        let req = ExecRequest::new("/bin/sh", TaskKind::Light)
+            .arg("-c")
+            .arg("kill -9 $$");
+        let report = runner.run(&req).await.unwrap();
+        assert_eq!(report.signal, Some(9), "SIGKILL must surface");
+        assert_eq!(report.exit_code, None);
+        assert!(!report.timed_out);
     }
 
     #[tokio::test]

@@ -17,6 +17,8 @@ pub struct ToolRecord {
     /// Human command line, e.g. `cargo check --workspace`.
     pub label: String,
     pub exit_code: Option<i32>,
+    /// Terminating signal number when the child died by signal (Unix).
+    pub signal: Option<i32>,
     pub timed_out: bool,
     pub duration_ms: u64,
     pub stdout: String,
@@ -31,6 +33,7 @@ impl ToolRecord {
         Self {
             label: label.into(),
             exit_code: report.exit_code,
+            signal: report.signal,
             timed_out: report.timed_out,
             duration_ms: report.duration.as_millis().try_into().unwrap_or(u64::MAX),
             stdout: report.stdout.clone(),
@@ -207,6 +210,7 @@ mod tests {
         ToolRecord {
             label: label.into(),
             exit_code: exit,
+            signal: None,
             timed_out: false,
             duration_ms: 123,
             stdout: stdout.into(),

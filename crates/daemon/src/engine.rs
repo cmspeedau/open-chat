@@ -96,11 +96,13 @@ impl Engine {
                 .is_file()
                 .then(|| vec!["cargo".into(), "check".into(), "--workspace".into()])
         });
+        let diagnostics = Arc::new(openchat_session::tools::Diagnostics::new());
         let registry = standard_registry(
             Arc::clone(&self.governor),
             &self.cwd,
             Arc::clone(&self.store),
             verifier,
+            Arc::clone(&diagnostics),
         );
 
         let badges_stack = fp.stack_tag();
@@ -114,9 +116,11 @@ impl Engine {
             .collect();
         let governor = Arc::clone(&self.governor);
         let store = Arc::clone(&self.store);
+        let badges_diag = Arc::clone(&diagnostics);
 
         let mut agent = Agent::new(&provider, &registry, Some(Arc::clone(&self.store)))
             .with_budget(self.llm.max_total_tokens, 8)
+            .with_diagnostics(Arc::clone(&diagnostics))
             .with_skills(
                 prompt_skills
                     .iter()
@@ -135,6 +139,7 @@ impl Engine {
                     memory_entries: store.try_lock().map_or(0, |m| m.count().unwrap_or(0)),
                     slop_stripped_bytes: slop,
                     deduped_rule_lines: composed.deduped_rule_lines,
+                    memory_faults: badges_diag.count(),
                 }
             });
         if let Some(tx) = publisher {

@@ -13,11 +13,11 @@ use openchat_memory::MemoryStore;
 use openchat_tools::compact::{ToolRecord, Transcript};
 use tokio::sync::Mutex;
 
-use crate::compositor::{Composed, Compositor};
+use crate::compositor::{Composed, Compositor, MEMORY_SAFETY_RULES};
 use crate::events::{Badges, TurnEvent};
 use crate::provider::{ChatMessage, ChatRequest, Provider, ToolCall};
 use crate::slop::strip_leading_slop;
-use crate::tools::{ApplyPatchTool, Registry};
+use crate::tools::{ApplyPatchTool, Diagnostics, Registry};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -73,6 +73,8 @@ pub struct Agent<'a> {
     publisher: Option<tokio::sync::broadcast::Sender<TurnEvent>>,
     /// Daemon-supplied closure completing the badges at turn close.
     badges_fn: Option<BadgesFn>,
+    /// Memory-fault ledger shared with the tool registry.
+    diagnostics: Option<Arc<Diagnostics>>,
 }
 
 /// Supplies the badges document at turn close from the final composition
@@ -96,6 +98,7 @@ impl<'a> Agent<'a> {
             max_iterations: 8,
             publisher: None,
             badges_fn: None,
+            diagnostics: None,
         }
     }
 
@@ -115,6 +118,14 @@ impl<'a> Agent<'a> {
         f: impl Fn(&Composed, usize) -> Badges + Send + Sync + 'static,
     ) -> Self {
         self.badges_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Receives memory-fault trap escalations from the tools; when armed,
+    /// the memory-safety ruleset rides every following prompt automatically.
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Arc<Diagnostics>) -> Self {
+        self.diagnostics = Some(diagnostics);
         self
     }
 
@@ -163,8 +174,13 @@ impl<'a> Agent<'a> {
             iterations = iteration;
             let memory_hits = self.recall_memories(user).await;
             let rendered = transcript.render();
-            let skill_pairs: Vec<(&str, &str)> = self
-                .skills
+            // Skill pairs: bound catalog, plus the memory-safety ruleset
+            // while the trap ledger is armed (Phase 2 auto-injection).
+            let mut skill_owned: Vec<(String, String)> = self.skills.clone();
+            if self.diagnostics.as_ref().is_some_and(|d| d.is_armed()) {
+                skill_owned.push(("memory-safety".into(), MEMORY_SAFETY_RULES.into()));
+            }
+            let skill_pairs: Vec<(&str, &str)> = skill_owned
                 .iter()
                 .map(|(i, b)| (i.as_str(), b.as_str()))
                 .collect();
@@ -241,6 +257,7 @@ impl<'a> Agent<'a> {
                 }
             }
 
+            let faults_before = self.diagnostics.as_ref().map_or(0, |d| d.count());
             for call in &resp.tool_calls {
                 let outcome = self.registry.dispatch(call).await;
                 let digest = outcome.record.as_ref().map_or_else(
@@ -262,6 +279,18 @@ impl<'a> Agent<'a> {
                     digest: digest.clone(),
                 });
                 history.push(ChatMessage::tool(call.id.clone(), outcome.text));
+            }
+            // Surface any trap hits from this batch as wire events; the
+            // ruleset rides the *next* compose automatically.
+            if let Some(ledger) = &self.diagnostics
+                && ledger.count() > faults_before
+                && let Some(diag) = ledger.last()
+            {
+                self.publish(TurnEvent::MemoryFault {
+                    fault: diag.fault.as_str().to_owned(),
+                    headline: diag.headline.clone(),
+                    advice: diag.advice.to_owned(),
+                });
             }
         }
 
@@ -317,6 +346,7 @@ impl<'a> Agent<'a> {
                 memory_entries: 0,
                 slop_stripped_bytes: slop,
                 deduped_rule_lines: composed.deduped_rule_lines,
+                memory_faults: self.diagnostics.as_ref().map_or(0, |d| d.count()),
             },
             |f| f(composed, slop),
         )
@@ -477,7 +507,13 @@ mod tests {
             .unwrap(),
         );
         let store = Arc::new(Mutex::new(MemoryStore::open_in_memory(4).unwrap()));
-        crate::tools::standard_registry(governor, dir, store, verifier)
+        crate::tools::standard_registry(
+            governor,
+            dir,
+            store,
+            verifier,
+            Arc::new(crate::tools::Diagnostics::new()),
+        )
     }
 
     #[tokio::test]
@@ -677,6 +713,7 @@ mod tests {
             dir.path(),
             Arc::clone(&store),
             None,
+            Arc::new(crate::tools::Diagnostics::new()),
         );
         let provider = Scripted::new(vec![text_reply("noted, tabs it is")]);
         let agent = Agent::new(&provider, &registry, Some(store));
@@ -692,6 +729,71 @@ mod tests {
                 .any(|m| m.content.contains("tabs for indentation")),
             "recall injected without the model asking"
         );
+    }
+
+    #[tokio::test]
+    async fn memory_fault_arms_the_ruleset_and_publishes() {
+        use tokio::sync::broadcast;
+        let dir = tempfile::tempdir().unwrap();
+        // Rebuild with a shared ledger so agent and tools see one truth.
+        let gov = Arc::new(
+            openchat_governor::Governor::new(openchat_governor::GovernorConfig {
+                low_process_priority: false,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let diag = Arc::new(crate::tools::Diagnostics::new());
+        let store = Arc::new(Mutex::new(MemoryStore::open_in_memory(4).unwrap()));
+        let registry = crate::tools::standard_registry(
+            Arc::clone(&gov),
+            dir.path(),
+            store,
+            None,
+            Arc::clone(&diag),
+        );
+        let log = dir.path().join("asan.log");
+        std::fs::write(
+            &log,
+            "==7==ERROR: AddressSanitizer: heap-use-after-free on address 0xfeed\n",
+        )
+        .unwrap();
+        let asan_cmd = tool_reply(
+            "c1",
+            "run_command",
+            json!({"cmd": format!("/bin/cat {}", log.display()), "build": false}),
+        );
+        let provider = Scripted::new(vec![asan_cmd, text_reply("fixed: owner now drops it")]);
+        let (tx, mut rx) = broadcast::channel(64);
+        let out = Agent::new(&provider, &registry, None)
+            .with_diagnostics(Arc::clone(&diag))
+            .with_publisher(tx)
+            .run("run it", &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(out.text, "fixed: owner now drops it");
+        let seen = provider.seen.lock().await;
+        assert!(
+            !seen[0].messages[0]
+                .content
+                .contains("MEMORY-SAFETY DIAGNOSTIC MODE"),
+            "not armed before the fault"
+        );
+        let second = &seen[1].messages[0].content;
+        assert!(
+            second.contains("### memory-safety"),
+            "ruleset auto-injected"
+        );
+        assert!(second.contains("RAII first"), "rules content present");
+        assert!(diag.is_armed() && diag.count() == 1);
+        let mut saw_fault = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, TurnEvent::MemoryFault { ref fault, .. } if fault == "address-sanitizer")
+            {
+                saw_fault = true;
+            }
+        }
+        assert!(saw_fault, "wire event must surface the trap");
     }
 
     #[tokio::test]

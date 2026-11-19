@@ -4,17 +4,59 @@
 //! reach the machine except through these doors.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use openchat_governor::Governor;
 use openchat_memory::{MemoryScope, MemoryStore};
 use openchat_tools::compact::ToolRecord;
-use openchat_tools::exec::{ExecRequest, TaskKind, ToolRunner};
+use openchat_tools::diagnose::{self, Diagnosis};
+use openchat_tools::exec::{ExecError, ExecRequest, TaskKind, ToolRunner};
 use openchat_tools::patch;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::provider::{BoxFuture, ToolSchema};
+
+/// Ledger of memory faults the diagnostic trap raised during a turn.
+/// Filled by `run_command`/`apply_patch`; while armed, the agent injects
+/// the memory-safety ruleset into every following prompt (Phase 2's
+/// automated skill injection).
+#[derive(Debug, Default)]
+pub struct Diagnostics {
+    armed: AtomicBool,
+    count: AtomicUsize,
+    last: StdMutex<Option<Diagnosis>>,
+}
+
+impl Diagnostics {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record(&self, d: Diagnosis) -> Diagnosis {
+        self.armed.store(true, Ordering::SeqCst);
+        self.count.fetch_add(1, Ordering::SeqCst);
+        *self.last.lock().expect("diagnostics lock") = Some(d.clone());
+        d
+    }
+
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+
+    #[must_use]
+    pub fn last(&self) -> Option<Diagnosis> {
+        self.last.lock().expect("diagnostics lock").clone()
+    }
+}
 
 /// What a tool returns to the model, plus an optional transcript record
 /// for the rolling compactor.
@@ -101,15 +143,22 @@ pub struct RunCommandTool {
     governor: Arc<Governor>,
     root: PathBuf,
     timeout: std::time::Duration,
+    diagnostics: Arc<Diagnostics>,
 }
 
 impl RunCommandTool {
     #[must_use]
-    pub const fn new(governor: Arc<Governor>, root: PathBuf, timeout: std::time::Duration) -> Self {
+    pub const fn new(
+        governor: Arc<Governor>,
+        root: PathBuf,
+        timeout: std::time::Duration,
+        diagnostics: Arc<Diagnostics>,
+    ) -> Self {
         Self {
             governor,
             root,
             timeout,
+            diagnostics,
         }
     }
 }
@@ -171,11 +220,30 @@ impl Tool for RunCommandTool {
                 Ok(report) => {
                     let record = ToolRecord::from_report(cmd, &report);
                     let ok = record.succeeded();
+                    let mut text = render_exec(&record);
+                    // The diagnostic trap: classify memory failures the exit
+                    // code alone hides, arm the skill injection, and show
+                    // the model the evidence plus the next step.
+                    if let Some(d) = diagnose::diagnose(
+                        &record.stdout,
+                        &record.stderr,
+                        record.exit_code,
+                        record.signal,
+                        record.timed_out,
+                    ) {
+                        let d = self.diagnostics.record(d);
+                        text.push('\n');
+                        text.push_str(&d.render());
+                    }
                     ToolOutcome {
                         ok,
-                        text: render_exec(&record),
+                        text,
                         record: Some(record),
                     }
+                }
+                Err(ExecError::NoHeadroom) => {
+                    let d = self.diagnostics.record(diagnose::headroom_refused());
+                    ToolOutcome::plain(false, d.render())
                 }
                 Err(e) => ToolOutcome::plain(false, format!("exec error: {e}")),
             }
@@ -220,16 +288,23 @@ pub struct ApplyPatchTool {
     governor: Arc<Governor>,
     verifier: Option<Vec<String>>,
     patched_this_turn: std::sync::atomic::AtomicBool,
+    diagnostics: Arc<Diagnostics>,
 }
 
 impl ApplyPatchTool {
     #[must_use]
-    pub fn new(root: PathBuf, governor: Arc<Governor>, verifier: Option<Vec<String>>) -> Self {
+    pub fn new(
+        root: PathBuf,
+        governor: Arc<Governor>,
+        verifier: Option<Vec<String>>,
+        diagnostics: Arc<Diagnostics>,
+    ) -> Self {
         Self {
             root,
             governor,
             verifier,
             patched_this_turn: std::sync::atomic::AtomicBool::new(false),
+            diagnostics,
         }
     }
 
@@ -258,10 +333,24 @@ impl ApplyPatchTool {
             output_cap: openchat_tools::exec::DEFAULT_OUTPUT_CAP,
         };
         match ToolRunner::new(&self.governor).run(&req).await {
-            Ok(report) => Some(ToolRecord::from_report(verb.join(" "), &report)),
+            Ok(report) => {
+                let record = ToolRecord::from_report(verb.join(" "), &report);
+                // Verifiers are where sanitizers run: trap there too.
+                if let Some(d) = diagnose::diagnose(
+                    &record.stdout,
+                    &record.stderr,
+                    record.exit_code,
+                    record.signal,
+                    record.timed_out,
+                ) {
+                    self.diagnostics.record(d);
+                }
+                Some(record)
+            }
             Err(e) => Some(ToolRecord {
                 label: verb.join(" "),
                 exit_code: None,
+                signal: None,
                 timed_out: false,
                 duration_ms: 0,
                 stdout: String::new(),
@@ -545,23 +634,27 @@ impl Tool for MemoryForgetTool {
 }
 
 /// Build the standard registry used by the daemon and the agent loop.
+/// `diagnostics` receives memory-fault traps from both exec and verify.
 #[must_use]
 pub fn standard_registry(
     governor: Arc<Governor>,
     root: &Path,
     memory: SharedMemory,
     verifier: Option<Vec<String>>,
+    diagnostics: Arc<Diagnostics>,
 ) -> Registry {
     let mut reg = Registry::default();
     reg.register(Box::new(RunCommandTool::new(
         Arc::clone(&governor),
         root.to_path_buf(),
         std::time::Duration::from_secs(300),
+        Arc::clone(&diagnostics),
     )));
     reg.register(Box::new(ApplyPatchTool::new(
         root.to_path_buf(),
         governor,
         verifier,
+        diagnostics,
     )));
     reg.register(Box::new(MemoryStoreTool::new(Arc::clone(&memory))));
     reg.register(Box::new(MemoryRecallTool::new(Arc::clone(&memory), 800)));
@@ -600,7 +693,13 @@ mod tests {
     #[tokio::test]
     async fn run_command_executes_and_digests() {
         let g = governor();
-        let reg = standard_registry(Arc::clone(&g), Path::new("/"), mem().await, None);
+        let reg = standard_registry(
+            Arc::clone(&g),
+            Path::new("/"),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+        );
         let out = reg
             .dispatch(&call(
                 "run_command",
@@ -615,7 +714,13 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tool_is_a_soft_error() {
-        let reg = standard_registry(governor(), Path::new("/tmp"), mem().await, None);
+        let reg = standard_registry(
+            governor(),
+            Path::new("/tmp"),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+        );
         let out = reg.dispatch(&call("launch_missiles", "{}")).await;
         assert!(!out.ok);
         assert!(out.text.contains("unknown tool"), "{}", out.text);
@@ -623,7 +728,13 @@ mod tests {
 
     #[tokio::test]
     async fn bad_json_arguments_rejected() {
-        let reg = standard_registry(governor(), Path::new("/tmp"), mem().await, None);
+        let reg = standard_registry(
+            governor(),
+            Path::new("/tmp"),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+        );
         let out = reg.dispatch(&call("run_command", "{not json")).await;
         assert!(!out.ok);
         assert!(out.text.contains("not valid JSON"));
@@ -645,6 +756,7 @@ mod tests {
                 "two".into(),
                 "f.txt".into(),
             ]),
+            Arc::new(Diagnostics::new()),
         );
         let failing = reg
             .dispatch(&call(
@@ -674,7 +786,13 @@ mod tests {
     #[tokio::test]
     async fn memory_round_trip_through_tools() {
         let store = mem().await;
-        let reg = standard_registry(governor(), Path::new("/tmp"), Arc::clone(&store), None);
+        let reg = standard_registry(
+            governor(),
+            Path::new("/tmp"),
+            Arc::clone(&store),
+            None,
+            Arc::new(Diagnostics::new()),
+        );
         let stored = reg
             .dispatch(&call(
                 "memory_store",
@@ -697,8 +815,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sanitizer_report_arms_ledger_and_annotates_result() {
+        let g = governor();
+        let diag = Arc::new(Diagnostics::new());
+        let reg = standard_registry(g, Path::new("/tmp"), mem().await, None, Arc::clone(&diag));
+        // No shell needed: a file with the sanitizer banner, printed by cat.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("asan.log");
+        std::fs::write(
+            &log,
+            "==42==ERROR: AddressSanitizer: heap-use-after-free on address 0xdeadbeef\n",
+        )
+        .unwrap();
+        let out = reg
+            .dispatch(&call(
+                "run_command",
+                &json!({"cmd": format!("/bin/cat {}", log.display()), "build": false}).to_string(),
+            ))
+            .await;
+        // cat itself succeeded; the trap fired on the banner it printed.
+        assert!(out.ok);
+        assert!(
+            out.text
+                .contains("[memory-diagnostic] fault=address-sanitizer"),
+            "{}",
+            out.text
+        );
+        assert!(diag.is_armed());
+        assert_eq!(diag.count(), 1);
+        assert_eq!(
+            diag.last().unwrap().fault,
+            openchat_tools::diagnose::MemoryFault::AddressSanitizer
+        );
+        // A clean command leaves the ledger untouched.
+        let clean = reg
+            .dispatch(&call("run_command", r#"{"cmd":"/bin/true","build":false}"#))
+            .await;
+        assert!(clean.ok);
+        assert_eq!(diag.count(), 1);
+    }
+
+    #[tokio::test]
     async fn unsafe_paths_blocked_in_patch_tool() {
-        let reg = standard_registry(governor(), Path::new("/tmp/root"), mem().await, None);
+        let reg = standard_registry(
+            governor(),
+            Path::new("/tmp/root"),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+        );
         let out = reg
             .dispatch(&call(
                 "apply_patch",

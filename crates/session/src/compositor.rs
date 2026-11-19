@@ -36,6 +36,24 @@ Operating notes under the law above:
 never recall it from the conversation.
 - A failing verification keeps the turn open; expect the engine to re-run it.";
 
+/// Auto-injected when the memory-fault trap fires (Phase 2: automated
+/// memory-safety skill injection). Names the three areas the README
+/// mandates - RAII, weak references, pointer hygiene - plus the buffer
+/// discipline that prevents the next fault.
+pub const MEMORY_SAFETY_RULES: &str = "\
+MEMORY-SAFETY DIAGNOSTIC MODE (armed by the engine after a detected memory fault):
+- RAII first: every resource gets an owner whose drop releases it; no manual \
+free/close on error paths, no late cleanup that an early return skips.
+- Cycles: break parent/child reference cycles with Weak; upgrade() at use and \
+drop the guard immediately.
+- Pointer hygiene: prefer borrows over raw pointers; every unsafe block states \
+its // SAFETY invariant and has a test that exercises it.
+- Bounded growth: cap every collection fed by untrusted or streamed input; \
+chunk large buffers; never size allocations from a raw length field.
+- Leaks at exit are real leaks: rerun the sanitizer/leak-check variant named \
+in the diagnostic before claiming repair; 'fine after restart' is not a fix.
+- Fix the root cause the report cites; do not paper over it by raising limits.";
+
 /// What survived assembly, per section, for telemetry and debugging.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionReport {

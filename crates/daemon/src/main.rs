@@ -103,14 +103,28 @@ async fn exec_main(argv: &[String]) -> Result<()> {
     let runner = ToolRunner::new(&governor);
     let report = runner.run(&req).await.context("exec failed")?;
     let label = format!("{} {}", req.program, req.args.join(" "));
-    eprintln!("{}", ToolRecord::from_report(label, &report).digest());
-    // Pass the child's outcome through so CI wrappers see the real code
-    // (124 mirrors coreutils timeout convention).
-    std::process::exit(
-        report
-            .exit_code
-            .unwrap_or(if report.timed_out { 124 } else { 1 }),
-    );
+    let record = ToolRecord::from_report(label, &report);
+    eprintln!("{}", record.digest());
+    // Diagnostics trap also applies to manual exec runs.
+    if let Some(d) = openchat_tools::diagnose::diagnose(
+        &record.stdout,
+        &record.stderr,
+        record.exit_code,
+        record.signal,
+        record.timed_out,
+    ) {
+        eprintln!("{}", d.render());
+    }
+    // Pass the child's outcome through so CI wrappers see the real code:
+    // 124 for our timeout kill (coreutils convention), 128+signal for
+    // signal deaths, otherwise the child's exit code.
+    let code = match (report.exit_code, report.signal, report.timed_out) {
+        (Some(c), _, _) => c,
+        (None, Some(sig), _) => 128 + sig,
+        (None, None, true) => 124,
+        (None, None, false) => 1,
+    };
+    std::process::exit(code);
 }
 
 /// Human-readable line for one wire event (the CLI is just another client
@@ -144,6 +158,12 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
         }
         TurnEvent::SlopStripped { bytes } => {
             eprintln!("· slop interceptor stripped {bytes} bytes of filler");
+            false
+        }
+        TurnEvent::MemoryFault {
+            fault, headline, ..
+        } => {
+            eprintln!("· ⚠ memory diagnostic [{fault}]: {headline}");
             false
         }
         TurnEvent::TurnClosed {

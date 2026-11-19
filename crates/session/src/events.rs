@@ -29,6 +29,8 @@ pub struct Badges {
     pub slop_stripped_bytes: usize,
     /// Rule lines deduplicated out of skill bodies by the compositor.
     pub deduped_rule_lines: usize,
+    /// Memory-fault trap hits this turn (diagnostics armed or not).
+    pub memory_faults: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,14 @@ pub enum TurnEvent {
     },
     SlopStripped {
         bytes: usize,
+    },
+    /// The memory-fault diagnostic trap fired this turn (sanitizer report,
+    /// OOM kill, segfault...). The memory-safety ruleset is auto-injected
+    /// into the following prompts until the turn closes.
+    MemoryFault {
+        fault: String,
+        headline: String,
+        advice: String,
     },
     /// Turn finished; `text` is the clean final answer.
     TurnClosed {

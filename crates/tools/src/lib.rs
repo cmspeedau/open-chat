@@ -10,5 +10,6 @@
 //!   one-line digests so long sessions stay in budget (Phase 1's last item).
 
 pub mod compact;
+pub mod diagnose;
 pub mod exec;
 pub mod patch;

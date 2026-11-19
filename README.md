@@ -19,7 +19,7 @@ In standard agent setups, anti-slop guidelines are treated as optional system pr
 
 In `open-chat`, **Anti-Slop is hardcoded into the Rust daemon binary as Inviolable Engine Law (`const ANTI_SLOP_LAW`)**. It cannot be overridden by conversational drift, user prompts, or subagent prompts.
 
-### The Four Engine Invariants (The "Anti-Slop Law")
+### The Five Engine Invariants (The "Anti-Slop Law")
 
 ```rust
 // Core Engine Invariant: Embedded at compile-time directly in the Rust binary
@@ -297,7 +297,6 @@ When managing a library of **55+ skills**, manually calling them or dumping them
         └────────────────────────────────────────────────────────┘
                                      │
               ┌──────────────────────┴──────────────────────┐
-              ┌──────────────────────┴──────────────────────┐
               │                                             │
       [Skill Matched]                                 [No Skill Found]
               │                                             │
@@ -458,6 +457,6 @@ The `open-chat` implementation is structured into phased milestones addressing a
 ### Phase 5: Multi-Interface Adapters & Resilient UI
 - [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.
 - [ ] **Lightweight Virtualized Web UI:** Collapsed envelope rendering preventing 1.2GB+ DOM overload and input stutter in long sessions.
-- [ ] **Interactive Dynamic Core Throttling Controls:** OpenChamber-style header pill / settings slider and bot chat commands (`/cores <n>`, `/set cores <n>`) for real-time CPU throttling adjustments without daemon restart.
+- [x] **Interactive Dynamic Core Throttling Controls:** OpenChamber-style header pill / settings slider and bot chat commands (`/cores <n>`, `/governor status`) for real-time CPU throttling adjustments via daemon IPC.
 - [x] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
 - [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.

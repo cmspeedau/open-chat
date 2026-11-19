@@ -13,3 +13,4 @@ pub mod compact;
 pub mod diagnose;
 pub mod exec;
 pub mod patch;
+pub mod slop;

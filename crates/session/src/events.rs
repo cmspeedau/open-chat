@@ -31,6 +31,8 @@ pub struct Badges {
     pub deduped_rule_lines: usize,
     /// Memory-fault trap hits this turn (diagnostics armed or not).
     pub memory_faults: usize,
+    /// Task surfaces auto-bound this turn ("code", later "ui", "copy").
+    pub armed_surfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,12 @@ pub enum TurnEvent {
         fault: String,
         headline: String,
         advice: String,
+    },
+    /// A task surface (code, later ui/copy) was auto-bound for this turn;
+    /// its ruleset rides every following prompt.
+    SurfaceArmed {
+        surface: String,
+        reason: String,
     },
     /// Turn finished; `text` is the clean final answer.
     TurnClosed {

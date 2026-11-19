@@ -166,6 +166,10 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
             eprintln!("· ⚠ memory diagnostic [{fault}]: {headline}");
             false
         }
+        TurnEvent::SurfaceArmed { surface, reason } => {
+            eprintln!("· ◇ {surface}-surface rules bound: {reason}");
+            false
+        }
         TurnEvent::TurnClosed {
             text,
             iterations,
@@ -184,11 +188,16 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
             };
             eprintln!(
                 "· closed in {iterations} iterations · stack=[{}] skills=[{skills}] \
-                 prompt={}t governor={}/{} cores {} slot(s) memory={} dedup={} slop={}B",
+                 surfaces=[{}] prompt={}t governor={}/{} cores {} slot(s) memory={} dedup={} slop={}B faults={}",
                 if badges.stack.is_empty() {
                     "none"
                 } else {
                     &badges.stack
+                },
+                if badges.armed_surfaces.is_empty() {
+                    "none".to_owned()
+                } else {
+                    badges.armed_surfaces.join(",")
                 },
                 badges.prompt_tokens,
                 badges.cores,
@@ -197,6 +206,7 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
                 badges.memory_entries,
                 badges.deduped_rule_lines,
                 badges.slop_stripped_bytes,
+                badges.memory_faults,
             );
             true
         }

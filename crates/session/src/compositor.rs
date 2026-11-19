@@ -54,6 +54,32 @@ chunk large buffers; never size allocations from a raw length field.
 in the diagnostic before claiming repair; 'fine after restart' is not a fix.
 - Fix the root cause the report cites; do not paper over it by raising limits.";
 
+/// Code-surface ruleset, auto-bound whenever the turn touches source files
+/// (Phase 2 Code-Surface Anti-Slop Skill Pack). Distilled from the
+/// full-spectrum matrix and the antislop code-comment skill: it targets
+/// defensive over-engineering and decorative noise, and is honest about
+/// what the runtime gate can and cannot check.
+pub const CODE_SURFACE_RULES: &str = "\
+CODE-SURFACE RULES (auto-bound: this turn touches source files):
+- No defensive over-engineering: no abstraction, trait, wrapper, factory, \
+config flag, or generic parameter until a second real caller needs it. \
+Solve the case in front of you.
+- No speculative generalization: write the concrete function; rename or \
+widen later when reality asks. Premature micro-optimization is banned; \
+optimize against a measured number and cite it in the commit or comment.
+- Never swallow errors: no bare `except:`, empty catch, or `return nil` on \
+a real failure. Handle, propagate, or log with context; the engine gate \
+flags avoidable ones.
+- Wrap only what buys something: a try/catch, layer, or helper that adds \
+no behavior is noise - remove it rather than polishing it.
+- Comments carry information the code cannot: invariants, units, workarounds, \
+WHY. No banner separators, `// Step 1:` narration, ALL-CAPS labels, or \
+comments restating the next line.
+- Redundant tests are banned: one test per behavior; do not re-test what \
+compiler, linter, or an existing test already proves.
+- Emit minimal hunks only: change three lines with three lines, never by \
+re-emitting the file.";
+
 /// What survived assembly, per section, for telemetry and debugging.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionReport {

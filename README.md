@@ -437,7 +437,7 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
 - [x] **Full-Spectrum Anti-Slop Contract:** Compile-time architectural law spans code, UI/design, copy/prose, and agent execution; relevant rules bind to the active task and file operations.
 - [x] **Runtime Slop Gates:** Stream-level conversational filtering, surgical patch validation, and evidence-based verification; disclose missing/unavailable validators rather than claiming success.
-- [ ] **Code-Surface Anti-Slop Skill Pack:** Auto-bind code/comment hygiene by source globs; block needless abstractions, wrappers, catches, micro-optimizations, and full-file re-emits.
+- [x] **Code-Surface Anti-Slop Skill Pack:** Auto-bind code/comment hygiene by source globs; block needless abstractions, wrappers, catches, micro-optimizations, and full-file re-emits.
 - [ ] **UI/Design & Mobile Quality Skill Pack:** Auto-bind design, accessibility/contrast, interaction-state, and responsive/mobile checks for UI surfaces.
 - [ ] **Copywriting/Human Prose Skill Pack:** Auto-bind direct-language guidance to `.md`, `.txt`, and UI copy; screen for filler, buzzwords, canned phrasing, and emoji overload.
 - [x] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.

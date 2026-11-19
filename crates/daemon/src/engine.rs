@@ -97,12 +97,19 @@ impl Engine {
                 .then(|| vec!["cargo".into(), "check".into(), "--workspace".into()])
         });
         let diagnostics = Arc::new(openchat_session::tools::Diagnostics::new());
+        let surfaces = Arc::new(openchat_session::tools::Surfaces::new());
+        // Code stack => the code-surface pack is applicable before the
+        // first patch even lands; patches arm it too (belt and braces).
+        if !fp.languages.is_empty() {
+            surfaces.arm("code", format!("detected code stack: {}", fp.stack_tag()));
+        }
         let registry = standard_registry(
             Arc::clone(&self.governor),
             &self.cwd,
             Arc::clone(&self.store),
             verifier,
             Arc::clone(&diagnostics),
+            Arc::clone(&surfaces),
         );
 
         let badges_stack = fp.stack_tag();
@@ -117,10 +124,12 @@ impl Engine {
         let governor = Arc::clone(&self.governor);
         let store = Arc::clone(&self.store);
         let badges_diag = Arc::clone(&diagnostics);
+        let badges_surfaces = Arc::clone(&surfaces);
 
         let mut agent = Agent::new(&provider, &registry, Some(Arc::clone(&self.store)))
             .with_budget(self.llm.max_total_tokens, 8)
             .with_diagnostics(Arc::clone(&diagnostics))
+            .with_surfaces(Arc::clone(&surfaces))
             .with_skills(
                 prompt_skills
                     .iter()
@@ -140,6 +149,11 @@ impl Engine {
                     slop_stripped_bytes: slop,
                     deduped_rule_lines: composed.deduped_rule_lines,
                     memory_faults: badges_diag.count(),
+                    armed_surfaces: badges_surfaces
+                        .list()
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect(),
                 }
             });
         if let Some(tx) = publisher {

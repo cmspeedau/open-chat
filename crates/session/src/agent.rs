@@ -13,11 +13,23 @@ use openchat_memory::MemoryStore;
 use openchat_tools::compact::{ToolRecord, Transcript};
 use tokio::sync::Mutex;
 
-use crate::compositor::{Composed, Compositor, MEMORY_SAFETY_RULES};
+use crate::compositor::{CODE_SURFACE_RULES, Composed, Compositor, MEMORY_SAFETY_RULES};
 use crate::events::{Badges, TurnEvent};
 use crate::provider::{ChatMessage, ChatRequest, Provider, ToolCall};
 use crate::slop::strip_leading_slop;
-use crate::tools::{ApplyPatchTool, Diagnostics, Registry};
+use crate::tools::{ApplyPatchTool, Diagnostics, Registry, Surfaces};
+
+/// Compiled rule text per task surface; unknown/blank surfaces contribute
+/// nothing (a missing pack is never faked - README: "Missing a skill must
+/// not be represented as successful validation"). UI and copy packs are
+/// open Phase 2 boxes.
+#[must_use]
+fn surface_rules(surface: &str) -> Option<&'static str> {
+    match surface {
+        "code" => Some(CODE_SURFACE_RULES),
+        _ => None,
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -75,6 +87,8 @@ pub struct Agent<'a> {
     badges_fn: Option<BadgesFn>,
     /// Memory-fault ledger shared with the tool registry.
     diagnostics: Option<Arc<Diagnostics>>,
+    /// Task-surface ledger driving the code/ui/copy skill packs.
+    surfaces: Option<Arc<Surfaces>>,
 }
 
 /// Supplies the badges document at turn close from the final composition
@@ -99,6 +113,7 @@ impl<'a> Agent<'a> {
             publisher: None,
             badges_fn: None,
             diagnostics: None,
+            surfaces: None,
         }
     }
 
@@ -126,6 +141,14 @@ impl<'a> Agent<'a> {
     #[must_use]
     pub fn with_diagnostics(mut self, diagnostics: Arc<Diagnostics>) -> Self {
         self.diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Surface ledger (code/ui/copy packs); armed surfaces inject their
+    /// ruleset into all following prompts.
+    #[must_use]
+    pub fn with_surfaces(mut self, surfaces: Arc<Surfaces>) -> Self {
+        self.surfaces = Some(surfaces);
         self
     }
 
@@ -179,6 +202,14 @@ impl<'a> Agent<'a> {
             let mut skill_owned: Vec<(String, String)> = self.skills.clone();
             if self.diagnostics.as_ref().is_some_and(|d| d.is_armed()) {
                 skill_owned.push(("memory-safety".into(), MEMORY_SAFETY_RULES.into()));
+            }
+            // Surface packs: any armed surface with a compiled ruleset.
+            for (surface, _) in self.surfaces.as_ref().map(|s| s.list()).unwrap_or_default() {
+                if let Some(rules) = surface_rules(&surface)
+                    && !skill_owned.iter().any(|(id, _)| id == &surface)
+                {
+                    skill_owned.push((surface, rules.to_owned()));
+                }
             }
             let skill_pairs: Vec<(&str, &str)> = skill_owned
                 .iter()
@@ -258,6 +289,7 @@ impl<'a> Agent<'a> {
             }
 
             let faults_before = self.diagnostics.as_ref().map_or(0, |d| d.count());
+            let surfaces_before = self.surfaces.as_ref().map_or(0, |s| s.list().len());
             for call in &resp.tool_calls {
                 let outcome = self.registry.dispatch(call).await;
                 let digest = outcome.record.as_ref().map_or_else(
@@ -291,6 +323,12 @@ impl<'a> Agent<'a> {
                     headline: diag.headline.clone(),
                     advice: diag.advice.to_owned(),
                 });
+            }
+            // Newly armed task surfaces ride the next compose; announce now.
+            if let Some(ledger) = &self.surfaces {
+                for (surface, reason) in ledger.list().into_iter().skip(surfaces_before) {
+                    self.publish(TurnEvent::SurfaceArmed { surface, reason });
+                }
             }
         }
 
@@ -347,6 +385,11 @@ impl<'a> Agent<'a> {
                 slop_stripped_bytes: slop,
                 deduped_rule_lines: composed.deduped_rule_lines,
                 memory_faults: self.diagnostics.as_ref().map_or(0, |d| d.count()),
+                armed_surfaces: self
+                    .surfaces
+                    .as_ref()
+                    .map(|s| s.list().into_iter().map(|(name, _)| name).collect())
+                    .unwrap_or_default(),
             },
             |f| f(composed, slop),
         )
@@ -513,6 +556,7 @@ mod tests {
             store,
             verifier,
             Arc::new(crate::tools::Diagnostics::new()),
+            Arc::new(crate::tools::Surfaces::new()),
         )
     }
 
@@ -714,6 +758,7 @@ mod tests {
             Arc::clone(&store),
             None,
             Arc::new(crate::tools::Diagnostics::new()),
+            Arc::new(crate::tools::Surfaces::new()),
         );
         let provider = Scripted::new(vec![text_reply("noted, tabs it is")]);
         let agent = Agent::new(&provider, &registry, Some(store));
@@ -751,6 +796,7 @@ mod tests {
             store,
             None,
             Arc::clone(&diag),
+            Arc::new(crate::tools::Surfaces::new()),
         );
         let log = dir.path().join("asan.log");
         std::fs::write(
@@ -794,6 +840,59 @@ mod tests {
             }
         }
         assert!(saw_fault, "wire event must surface the trap");
+    }
+
+    #[tokio::test]
+    async fn code_surface_pack_reaches_following_prompts() {
+        use tokio::sync::broadcast;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let gov = Arc::new(
+            openchat_governor::Governor::new(openchat_governor::GovernorConfig {
+                low_process_priority: false,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let surfaces = Arc::new(crate::tools::Surfaces::new());
+        let store = Arc::new(Mutex::new(MemoryStore::open_in_memory(4).unwrap()));
+        let registry = crate::tools::standard_registry(
+            Arc::clone(&gov),
+            dir.path(),
+            store,
+            None,
+            Arc::new(crate::tools::Diagnostics::new()),
+            Arc::clone(&surfaces),
+        );
+        let patch = tool_reply(
+            "p1",
+            "apply_patch",
+            json!({"patches": "@@@ a.rs\n<<<<<<< SEARCH\nfn a() {}\n=======\npub fn a() {}\n>>>>>>> REPLACE\n"}),
+        );
+        let provider = Scripted::new(vec![patch, text_reply("done")]);
+        let (tx, mut rx) = broadcast::channel(64);
+        Agent::new(&provider, &registry, None)
+            .with_surfaces(Arc::clone(&surfaces))
+            .with_publisher(tx)
+            .run("make a public", &mut |_| {})
+            .await
+            .unwrap();
+        let seen = provider.seen.lock().await;
+        assert!(!seen[0].messages[0].content.contains("CODE-SURFACE RULES"));
+        let second = &seen[1].messages[0].content;
+        assert!(second.contains("### code"), "code pack auto-bound");
+        assert!(
+            second.contains("No defensive over-engineering"),
+            "pack content"
+        );
+        assert!(surfaces.is_armed("code"));
+        let mut announced = false;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(&ev, TurnEvent::SurfaceArmed { surface, .. } if surface == "code") {
+                announced = true;
+            }
+        }
+        assert!(announced, "SurfaceArmed wire event missing");
     }
 
     #[tokio::test]

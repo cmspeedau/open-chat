@@ -58,6 +58,46 @@ impl Diagnostics {
     }
 }
 
+/// Surfaces bound to the current turn (code, later ui/copy), with the
+/// reason each was armed. Filled by `apply_patch` source touches and by
+/// the daemon from the stack fingerprint; the agent injects the matching
+/// ruleset into following prompts and reports them on the badges.
+#[derive(Debug, Default)]
+pub struct Surfaces {
+    armed: StdMutex<Vec<(String, String)>>,
+}
+
+impl Surfaces {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Arm a surface; true when newly armed (first reason wins, deduped).
+    pub fn arm(&self, surface: &str, reason: impl Into<String>) -> bool {
+        let mut guard = self.armed.lock().expect("surfaces lock");
+        if guard.iter().any(|(s, _)| s == surface) {
+            return false;
+        }
+        guard.push((surface.to_owned(), reason.into()));
+        true
+    }
+
+    #[must_use]
+    pub fn is_armed(&self, surface: &str) -> bool {
+        self.armed
+            .lock()
+            .expect("surfaces lock")
+            .iter()
+            .any(|(s, _)| s == surface)
+    }
+
+    #[must_use]
+    pub fn list(&self) -> Vec<(String, String)> {
+        self.armed.lock().expect("surfaces lock").clone()
+    }
+}
+
 /// What a tool returns to the model, plus an optional transcript record
 /// for the rolling compactor.
 #[derive(Debug, Clone)]
@@ -289,6 +329,7 @@ pub struct ApplyPatchTool {
     verifier: Option<Vec<String>>,
     patched_this_turn: std::sync::atomic::AtomicBool,
     diagnostics: Arc<Diagnostics>,
+    surfaces: Arc<Surfaces>,
 }
 
 impl ApplyPatchTool {
@@ -298,6 +339,7 @@ impl ApplyPatchTool {
         governor: Arc<Governor>,
         verifier: Option<Vec<String>>,
         diagnostics: Arc<Diagnostics>,
+        surfaces: Arc<Surfaces>,
     ) -> Self {
         Self {
             root,
@@ -305,6 +347,7 @@ impl ApplyPatchTool {
             verifier,
             patched_this_turn: std::sync::atomic::AtomicBool::new(false),
             diagnostics,
+            surfaces,
         }
     }
 
@@ -413,6 +456,37 @@ impl Tool for ApplyPatchTool {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // Code-surface gate: touching source arms the ruleset for the
+            // rest of the turn, and added lines get the deterministic
+            // slop checks (swallowed errors, decorative comments).
+            let source_hits: Vec<String> = parsed
+                .iter()
+                .filter(|f| openchat_tools::slop::is_source_path(&f.path))
+                .map(|f| f.path.display().to_string())
+                .collect();
+            if !source_hits.is_empty() {
+                self.surfaces.arm(
+                    "code",
+                    format!("patch touched source files: {}", source_hits.join(", ")),
+                );
+                let mut advisories = Vec::new();
+                for file in &parsed {
+                    let added = file
+                        .hunks
+                        .iter()
+                        .map(|h| h.replace.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    for finding in openchat_tools::slop::check_added_source_text(&file.path, &added)
+                    {
+                        advisories.push(format!("{}: {}", file.path.display(), finding.render()));
+                    }
+                }
+                if !advisories.is_empty() {
+                    text.push_str("\n\n[code-slop advisory - not a failure, fix if avoidable]\n");
+                    text.push_str(&advisories.join("\n"));
+                }
+            }
             // Autonomous verification, right here, before the model sees
             // the result of its own edit. A pass clears dirty; a failure
             // leaves the turn open for the close-gate's repair nudge.
@@ -642,6 +716,7 @@ pub fn standard_registry(
     memory: SharedMemory,
     verifier: Option<Vec<String>>,
     diagnostics: Arc<Diagnostics>,
+    surfaces: Arc<Surfaces>,
 ) -> Registry {
     let mut reg = Registry::default();
     reg.register(Box::new(RunCommandTool::new(
@@ -655,6 +730,7 @@ pub fn standard_registry(
         governor,
         verifier,
         diagnostics,
+        surfaces,
     )));
     reg.register(Box::new(MemoryStoreTool::new(Arc::clone(&memory))));
     reg.register(Box::new(MemoryRecallTool::new(Arc::clone(&memory), 800)));
@@ -699,6 +775,7 @@ mod tests {
             mem().await,
             None,
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let out = reg
             .dispatch(&call(
@@ -720,6 +797,7 @@ mod tests {
             mem().await,
             None,
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let out = reg.dispatch(&call("launch_missiles", "{}")).await;
         assert!(!out.ok);
@@ -734,6 +812,7 @@ mod tests {
             mem().await,
             None,
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let out = reg.dispatch(&call("run_command", "{not json")).await;
         assert!(!out.ok);
@@ -757,6 +836,7 @@ mod tests {
                 "f.txt".into(),
             ]),
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let failing = reg
             .dispatch(&call(
@@ -792,6 +872,7 @@ mod tests {
             Arc::clone(&store),
             None,
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let stored = reg
             .dispatch(&call(
@@ -818,7 +899,14 @@ mod tests {
     async fn sanitizer_report_arms_ledger_and_annotates_result() {
         let g = governor();
         let diag = Arc::new(Diagnostics::new());
-        let reg = standard_registry(g, Path::new("/tmp"), mem().await, None, Arc::clone(&diag));
+        let reg = standard_registry(
+            g,
+            Path::new("/tmp"),
+            mem().await,
+            None,
+            Arc::clone(&diag),
+            Arc::new(Surfaces::new()),
+        );
         // No shell needed: a file with the sanitizer banner, printed by cat.
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("asan.log");
@@ -856,6 +944,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_patch_arms_code_surface_and_advises_on_added_slop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m.ts"), "run();\n").unwrap();
+        let surfaces = Arc::new(Surfaces::new());
+        let reg = standard_registry(
+            governor(),
+            dir.path(),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+            Arc::clone(&surfaces),
+        );
+        let out = reg
+            .dispatch(&call(
+                "apply_patch",
+                &json!({"patches": "@@@ m.ts\n<<<<<<< SEARCH\nrun();\n=======\ntry { run(); } catch (e) {}\n// ================= SETUP =================\n>>>>>>> REPLACE\n"}).to_string(),
+            ))
+            .await;
+        assert!(out.ok, "{}", out.text);
+        assert!(surfaces.is_armed("code"), "source touch must arm");
+        assert!(
+            out.text.contains("[code-slop advisory")
+                && out.text.contains("swallowed-error (empty catch)")
+                && out.text.contains("decorative comment"),
+            "advisories missing: {}",
+            out.text
+        );
+    }
+
+    #[tokio::test]
+    async fn docs_only_patch_does_not_arm_code_surface() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), "keep\n").unwrap();
+        let surfaces = Arc::new(Surfaces::new());
+        let reg = standard_registry(
+            governor(),
+            dir.path(),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+            Arc::clone(&surfaces),
+        );
+        let out = reg
+            .dispatch(&call(
+                "apply_patch",
+                &json!({"patches": "@@@ notes.md\n<<<<<<< SEARCH\nkeep\n=======\nkept\n>>>>>>> REPLACE\n"}).to_string(),
+            ))
+            .await;
+        assert!(out.ok);
+        assert!(!surfaces.is_armed("code"), "docs are not a code surface");
+    }
+
+    #[tokio::test]
     async fn unsafe_paths_blocked_in_patch_tool() {
         let reg = standard_registry(
             governor(),
@@ -863,6 +1004,7 @@ mod tests {
             mem().await,
             None,
             Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
         );
         let out = reg
             .dispatch(&call(

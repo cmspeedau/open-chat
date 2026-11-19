@@ -129,6 +129,20 @@ async fn handle(mut sock: TcpStream, engine: Arc<Engine>, hub: Arc<Hub>) -> anyh
         .unwrap_or_default();
     const INDEX_HTML: &str = include_str!("../assets/index.html");
     match (method.as_str(), route.as_str()) {
+        ("GET", "/logo-light.svg") => {
+            send_svg(
+                &mut sock,
+                include_str!("../assets/openchamber-logo-light.svg"),
+            )
+            .await
+        }
+        ("GET", "/logo-dark.svg") => {
+            send_svg(
+                &mut sock,
+                include_str!("../assets/openchamber-logo-dark.svg"),
+            )
+            .await
+        }
         ("GET", "/") => {
             sock.write_all(
                 format!(
@@ -306,6 +320,19 @@ async fn read_request(
     ))
 }
 
+async fn send_svg(sock: &mut TcpStream, svg: &str) -> anyhow::Result<()> {
+    sock.write_all(
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: image/svg+xml\r\ncache-control: no-store\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{svg}",
+            svg.len()
+        )
+        .as_bytes(),
+    )
+    .await?;
+    sock.flush().await?;
+    Ok(())
+}
+
 async fn send_json(
     sock: &mut TcpStream,
     status: u16,
@@ -422,6 +449,15 @@ mod tests {
         // No template filler: the empty-state copy must be the real one.
         assert!(html.contains("No turns yet"));
         assert!(!html.to_ascii_lowercase().contains("lorem"));
+        // interim branding: logo served and referenced, attribution present
+        let logo = reqwest::Client::new()
+            .get(format!("http://{addr}/logo-light.svg"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(logo.status(), 200);
+        assert_eq!(logo.headers()["content-type"], "image/svg+xml");
+        assert!(logo.text().await.unwrap().starts_with("<svg"));
         let fav = reqwest::Client::new()
             .get(format!("http://{addr}/favicon.ico"))
             .send()

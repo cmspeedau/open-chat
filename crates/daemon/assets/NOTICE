@@ -1,0 +1,37 @@
+# Asset attribution
+
+`openchamber-logo-light.svg` and `openchamber-logo-dark.svg` are taken from
+[OpenChamber](https://github.com/openchamber/openchamber) (`docs/references/badges/`),
+Copyright (c) 2025 Bohdan Triapitsyn, used here under the terms of the MIT
+License reproduced below.
+
+Interim branding note: `open-chat` is a rewrite *inspired by* OpenChamber and
+is not affiliated with or endorsed by the OpenChamber project. The logo is a
+stopgap while open-chat has its own identity. The MIT license covers the
+copyright in these files; it does not transfer trademark rights, so if the
+brand mark becomes a source of confusion, replace these assets with an
+original one.
+
+---
+
+MIT License
+
+Copyright (c) 2025 Bohdan Triapitsyn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

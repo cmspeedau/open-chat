@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>open-chat</title>
+<link rel="icon" type="image/svg+xml" href="/logo-light.svg" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/svg+xml" href="/logo-dark.svg" media="(prefers-color-scheme: dark)">
 <style>
 /* Design read: local daemon control plane for a developer. Calm, dense,
    instrument-grade. One accent (teal), no gradients, no glass, no motion
@@ -29,7 +31,14 @@ header {
   display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   padding: 14px 18px; border-bottom: 1px solid var(--line);
 }
-header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px;
+    display: flex; align-items: center; gap: 8px; }
+header img.logo { width: 20px; height: 20px; display: block; }
+header img.logo.dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  header img.logo.light { display: none; }
+  header img.logo.dark { display: block; }
+}
 #stack { color: var(--muted); font: 12px var(--mono); }
 #conn { margin-left: auto; display: flex; align-items: center; gap: 7px;
         font: 12px var(--mono); color: var(--muted); }
@@ -104,7 +113,10 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 </head>
 <body>
 <header>
-  <h1>open-chat</h1>
+  <h1><img class="logo light" src="/logo-light.svg" alt="" width="20" height="20"
+      title="OpenChamber logo (MIT), interim branding - see assets/NOTICE">
+    <img class="logo dark" src="/logo-dark.svg" alt="" width="20" height="20">
+    open-chat</h1>
   <span id="stack"></span>
   <span id="conn"><span class="dot" id="dot"></span><span id="connText">idle</span></span>
 </header>
@@ -324,7 +336,6 @@ $("prompt").addEventListener("input", function () {
   this.style.height = Math.min(this.scrollHeight, 160) + "px";
 });
 conn("", "idle");
-$("stack").textContent = "ready";
 // Deep link: ?prompt=... prefills the composer (never auto-submits).
 try {
   const qp = new URLSearchParams(location.search).get("prompt");

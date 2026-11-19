@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **hardcoded Anti-Slop Law compiled into core engine logic**, **runtime memory bug diagnostic self-healing**, **subagent deadlock prevention**, **system lockup prevention with user-configurable CPU core throttling**, and a **Context Compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **hardcoded Anti-Slop Law compiled into core engine logic**, **runtime memory bug diagnostic self-healing**, **subagent deadlock prevention**, **system lockup prevention with user-configurable CPU core throttling changeable via command on the fly**, and a **Context Compositor engine**.
 
 ---
 
@@ -67,7 +67,7 @@ Through real-world development and multi-agent issue analysis in OpenChamber, el
 
 | # | OpenChamber Shortfall | What Goes Wrong | The `open-chat` Fix |
 |---|---|---|---|
-| **1** | **Multi-Agent Host Lockups (PC Freezes)** | Spawning 3+ concurrent agents creates unconstrained child processes, unbounded thread pools, multiple file watchers, and competing compiler checks that saturate 100% CPU/RAM and freeze the OS. | **Multi-Agent Resource Governor & User CPU Core Caps:** Hard concurrency semaphores, user-configured CPU core limits (`max_cpu_cores`), single shared workspace file-watcher, queue-managed build/compiler checks, and OS process priority throttling. |
+| **1** | **Multi-Agent Host Lockups (PC Freezes)** | Spawning 3+ concurrent agents creates unconstrained child processes, unbounded thread pools, multiple file watchers, and competing compiler checks that saturate 100% CPU/RAM and freeze the OS. | **Multi-Agent Resource Governor & User CPU Core Caps:** Hard concurrency semaphores, user-configured CPU core limits (`max_cpu_cores`), single shared workspace file-watcher, queue-managed build/compiler checks, and OS process priority throttling. **Changeable on the fly via command (`/cores <n>`) or CLI.** |
 | **2** | **5× Output Token Bloat & Conversational Slop** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Anti-Slop Baked into Code as Inviolable Law:** Compiled into Rust binary, stream-level slop trimmer, and surgical search-and-replace tooling. |
 | **3** | **Runtime Memory Bugs (Leaks, SIGKILL & Unbounded Buffers)** | Unbounded agent log buffers, unpruned tool execution history, and lack of system memory awareness trigger runtime OOM panics or process freezes. | **Self-Monitoring Memory Guardrails & Diagnostic Self-Healing:** Hard caps on execution trace buffers, active memory telemetry, and auto-compaction before memory pressure triggers crash events. |
 | **4** | **Subagent Hangs & Deadlocks (Async Desync)** | Orchestrator-subagent runs hang indefinitely after 20–40 tool calls because parent sessions lose track of child SSE events or drop wake-ups. | **Strict Tokio Channel Ack & Timeout Deadlock Detector:** Typed async mpsc channels with heartbeat ping/pong, background task detached supervisors, and fail-safe timeouts. |
@@ -114,11 +114,12 @@ When running multiple agents concurrently (e.g., 3 agents simultaneously running
 │              open-chat Host Resource Arbiter                  │
 │                                                               │
 │  1. User Core Allocation (max_cpu_cores / affinity mask)      │
-│  2. Concurrency Semaphore: Max parallel heavy tasks           │
-│  3. Build/Lint Queue: Serialized `cargo check` / `tsc` runs    │
-│  4. Shared Workspace Watcher: 1 single file debouncer for all │
-│  5. Process Priority: Subprocess `nice` (Unix) / BelowNormal  │
-│  6. Memory Headroom Guard: Auto-throttles if free RAM < 15%   │
+│  2. Dynamic Slash Commands: `/cores <n>` & CLI adjustments    │
+│  3. Concurrency Semaphore: Max parallel heavy tasks           │
+│  4. Build/Lint Queue: Serialized `cargo check` / `tsc` runs    │
+│  5. Shared Workspace Watcher: 1 single file debouncer for all │
+│  6. Process Priority: Subprocess `nice` (Unix) / BelowNormal  │
+│  7. Memory Headroom Guard: Auto-throttles if free RAM < 15%   │
 └───────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
@@ -152,8 +153,13 @@ low_process_priority = true
    - `CARGO_BUILD_JOBS = max_cpu_cores`
    - `UV_THREAD_POOL_COUNT = max_cpu_cores`
    - `MAKEFLAGS = "-j{max_cpu_cores}"`
-3. **Interactive Control via Chat & UI:**
-   - **Telegram/Discord:** `/cores 2` immediately throttles background agents to 2 cores without needing to restart the daemon.
+3. **Changeable on the Fly via Commands & Interactive Controls:**
+   - **Chat Commands (Telegram, Discord, Web Chat):**
+     - `/cores <n>` — Dynamically reallocates CPU core budget in real-time (e.g., `/cores 2` during a meeting, `/cores 8` for an intensive background run).
+     - `/governor status` or `/cpu` — Displays active core allocations, live affinity masks, active worker pids, and process niceness deratings.
+     - `/cores reset` — Resets allocations back to configuration file defaults.
+   - **Terminal / CLI Command:**
+     - `openchat governor set-cores <n>` — Reconfigures the running background daemon via local IPC socket without terminating running tasks or restarting the daemon.
    - **Web UI:** A sticky slider pill: `⚙️ CPU Cap: [ 4 / 8 Cores ]` allows quick throttling on the fly.
 
 ---
@@ -402,6 +408,7 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Rust Daemon Scaffolding:** Headless async Tokio core daemon decoupled from any browser or Electron process.
 - [x] **Multi-Agent Host Resource Arbiter & CPU Governor:** Concurrency semaphores (`tokio::sync::Semaphore`), serialized build/lint check queue, and automated memory headroom guardrails.
 - [x] **User-Configurable CPU Core Throttling:** Explicit user limit (`max_cpu_cores` via `.openchat/config.toml`, CLI, or chat command), OS core affinity pinning (`sched_setaffinity` on Linux / `SetProcessAffinityMask` on Windows), and compiler thread-cap injection (`CARGO_BUILD_JOBS`, `RAYON_NUM_THREADS`, `UV_THREAD_POOL_COUNT`, `MAKEFLAGS`).
+- [x] **Changeable on the Fly via Commands:** Real-time throttling via interactive chat commands (`/cores <n>`, `/governor status`, `/cores reset`) and CLI command (`openchat governor set-cores <n>`) applied immediately via local daemon IPC without process restart.
 - [x] **OS Process Niceness & Priority Manager:** Automatic scheduling prioritization (`nice` on Unix/macOS, `BELOW_NORMAL_PRIORITY_CLASS` on Windows) to prevent subagents from seizing user desktop interactivity.
 - [x] **Shared Workspace File Watcher:** Single debounced file change bus replacing multiple uncoordinated file watchers per subagent.
 - [x] **Bounded Memory Ring Buffers:** Zero-copy execution streams with strict circular buffer caps (256KB) preventing process RAM leaks and OOM kills.

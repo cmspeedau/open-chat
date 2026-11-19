@@ -80,6 +80,47 @@ compiler, linter, or an existing test already proves.
 - Emit minimal hunks only: change three lines with three lines, never by \
 re-emitting the file.";
 
+/// UI/design/mobile ruleset, auto-bound when presentation files are touched
+/// or UI intent is detected. Distilled from the reference antislop skill
+/// family (`antislop-ui`, `antislop-layoutmobile`, `antislop-human` from
+/// miqdadbadjuber/anti-slop); scoped rules and provenance preserved here
+/// and in the skill registry.
+pub const UI_SURFACE_RULES: &str = "\
+UI-SURFACE RULES (auto-bound: this turn touches UI files):
+- No template identity: reject the AI defaults - blue/purple gradients, \
+glassmorphism everywhere, glow stacks, bento mosaics, cookie-cutter hero + \
+3-card rows. Every visual choice needs a one-line reason tied to hierarchy, \
+identity, or readability.
+- Contrast first: text must pass WCAG AA (4.5:1 body, 3:1 large) across the \
+whole area it travels over; never grey-on-grey or white-on-gradient.
+- States are the design: empty, loading, error, disabled, and focus states \
+ship with the component, not as follow-ups; interactive elements need \
+visible focus and cursor affordances.
+- Mobile is not an afterthought: no horizontal overflow, tap targets >= 44px, \
+reflow before shrink, respect prefers-reduced-motion.
+- Semantics beat divs: real button/a/label/alt; no clickable divs, no ARIA \
+that contradicts native roles.
+- Work from the project's design direction; if none exists, say the result \
+is a draft rather than inventing a house style silently.";
+
+/// Copywriting/prose ruleset, auto-bound when prose files are touched or
+/// writing intent is detected. Distilled from the reference antislop
+/// family (`antislop-copywriting`, `antislop-human`); pairs with the
+/// runtime prose gate (buzzwords, emoji spam) that screens results.
+pub const COPY_SURFACE_RULES: &str = "\
+COPY-SURFACE RULES (auto-bound: this turn touches prose):
+- Direct language: lead with what it is and what changed; cut throat-clearing \
+('In today's fast-paced world'), hype nouns (seamless, cutting-edge, \
+revolutionary, unleash), and symmetric slogan cadence.
+- No em dashes in generated text; use commas, colons, periods, or \
+parentheses.
+- Specific over impressive: numbers only when real and sourced; no invented \
+stats, testimonials, or compliance claims.
+- Match the project's existing voice; when editing, preserve the author's \
+patterns rather than normalizing them away.
+- UI copy: label what the control does ('Save token', not 'Submit'); errors \
+say what happened and what to do next.";
+
 /// What survived assembly, per section, for telemetry and debugging.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SectionReport {

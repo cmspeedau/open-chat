@@ -31,8 +31,15 @@ pub struct Badges {
     pub deduped_rule_lines: usize,
     /// Memory-fault trap hits this turn (diagnostics armed or not).
     pub memory_faults: usize,
-    /// Task surfaces auto-bound this turn ("code", later "ui", "copy").
+    /// Task surfaces auto-bound this turn ("code", "ui", "copy").
     pub armed_surfaces: Vec<String>,
+    /// Prose-gate findings on the final answer (disclosed, never rewritten).
+    pub prose_findings: usize,
+    /// Verification commands actually available and selected this turn.
+    pub checks_run: Vec<String>,
+    /// Checks the stack implies but the machine cannot run (disclosed,
+    /// never silently passed - README: missing != success).
+    pub checks_skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,11 +75,16 @@ pub enum TurnEvent {
         headline: String,
         advice: String,
     },
-    /// A task surface (code, later ui/copy) was auto-bound for this turn;
+    /// A task surface (code, ui, copy) was auto-bound for this turn;
     /// its ruleset rides every following prompt.
     SurfaceArmed {
         surface: String,
         reason: String,
+    },
+    /// The prose gate screened the final answer (copy surface): findings
+    /// are advisory; user-facing text is disclosed, never rewritten.
+    ProseGate {
+        findings: Vec<String>,
     },
     /// Turn finished; `text` is the clean final answer.
     TurnClosed {

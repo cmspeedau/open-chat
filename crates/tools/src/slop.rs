@@ -20,6 +20,12 @@ pub const SOURCE_EXTS: &[&str] = &[
     "cs", "java", "rb", "php", "kt", "swift", "scala", "lua",
 ];
 
+/// Extensions whose job is presentation or markup: the UI surface.
+pub const UI_EXTS: &[&str] = &["tsx", "jsx", "svelte", "vue", "css", "scss", "html", "htm"];
+
+/// Extensions whose job is human prose: the copy surface.
+pub const COPY_EXTS: &[&str] = &["md", "markdown", "txt", "rst", "adoc"];
+
 #[must_use]
 pub fn is_source_path(path: &Path) -> bool {
     path.extension()
@@ -208,6 +214,162 @@ fn is_all_caps_label(body: &str) -> bool {
         && b.chars().any(|c| c.is_ascii_alphabetic())
 }
 
+/// Which task surfaces a touched file belongs to (Phase 3 operation-aware
+/// auto-binding). Components are code AND ui; plain `.ts` is code only,
+/// matching the README matrix.
+#[must_use]
+pub fn surfaces_of(path: &Path) -> &'static [&'static str] {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return &[];
+    };
+    match ext {
+        "tsx" | "jsx" | "svelte" | "vue" => &["code", "ui"],
+        "css" | "scss" | "html" | "htm" => &["ui"],
+        "md" | "markdown" | "txt" | "rst" | "adoc" => &["copy"],
+        e if SOURCE_EXTS.contains(&e) => &["code"],
+        _ => &[],
+    }
+}
+
+/// UI-surface patch-time checks: only patterns with zero reasonable
+/// counter-use in the touched lines. Accessibility/responsive tooling runs
+/// separately as real checks (or is disclosed unavailable), never claimed
+/// from these heuristics.
+#[must_use]
+pub fn check_added_ui_text(path: &Path, added: &str) -> Vec<SlopFinding> {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return Vec::new();
+    };
+    if !UI_EXTS.contains(&ext) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let lower_all = added
+        .to_ascii_lowercase()
+        .replace("#ffffff", "#fff")
+        .replace("#000000", "#000");
+    let push = |kind: &'static str, line: &str, out: &mut Vec<SlopFinding>| {
+        let t = line.trim();
+        let mut end = t.len().min(120);
+        while !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.push(SlopFinding {
+            kind,
+            line: t[..end].to_owned(),
+        });
+    };
+    for line in added.lines() {
+        let l = line.to_ascii_lowercase();
+        if l.contains("user-scalable=no")
+            || l.contains("user-scalable=\'no\'")
+            || l.contains("user-scalable=\"no\"")
+            || l.contains("maximum-scale=1")
+            || l.contains("initial-scale=0")
+        {
+            push("viewport zoom locked", line, &mut out);
+        }
+        if (l.contains("outline:none") || l.contains("outline: none") || l.contains("outline:0"))
+            && !l.contains("focus")
+        {
+            push("focus indicator removed", line, &mut out);
+        }
+        if l.contains("<img") && !l.contains("alt=") && !l.trim_start().starts_with('*') {
+            push("image without alt", line, &mut out);
+        }
+    }
+    // Same explicit fg/bg color pair in the added block = invisible text.
+    // Parse per declaration (split on `;`/braces), not per line, so one
+    // rule carrying both `color:#fff` and `background:#fff` is caught.
+    for value in ["#fff", "white", "#000", "black"] {
+        let mut has_fg = false;
+        let mut has_bg = false;
+        for decl in lower_all.split([';', '{', '}']) {
+            let Some((key, val)) = decl.split_once(':') else {
+                continue;
+            };
+            let (key, val) = (key.trim(), val.trim());
+            if val != value {
+                continue;
+            }
+            match key {
+                "color" => has_fg = true,
+                "background" | "background-color" => has_bg = true,
+                _ => {}
+            }
+        }
+        if has_fg && has_bg {
+            let evidence = added
+                .lines()
+                .find(|l| {
+                    let ll = l.to_ascii_lowercase();
+                    ll.contains("background") && ll.contains(value)
+                })
+                .unwrap_or(value);
+            push("same foreground and background color", evidence, &mut out);
+            break;
+        }
+    }
+    out
+}
+
+/// AI-tell vocabulary and emoji-overload screening for prose surfaces
+/// (copywriting pack gate). Advisory only: user-facing text is disclosed,
+/// never silently rewritten.
+pub const BUZZWORDS: &[&str] = &[
+    "seamless",
+    "cutting-edge",
+    "revolutionary",
+    "next-generation",
+    "game-changer",
+    "unleash",
+    "elevate your",
+    "in today's fast-paced",
+    "in today's digital",
+    "unlock the power",
+    "harness the power",
+    "delve into",
+    "synergy",
+    "robust solution",
+];
+
+#[must_use]
+pub fn check_prose_text(text: &str) -> Vec<SlopFinding> {
+    let mut out = Vec::new();
+    let lower = text.to_ascii_lowercase();
+    for word in BUZZWORDS {
+        if lower.contains(word) {
+            let line = text
+                .lines()
+                .find(|l| l.to_ascii_lowercase().contains(word))
+                .unwrap_or(word)
+                .trim();
+            let mut end = line.len().min(120);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.push(SlopFinding {
+                kind: "AI-tell buzzword",
+                line: format!("`{word}` in: {}", &line[..end]),
+            });
+        }
+    }
+    let emojis = text
+        .chars()
+        .filter(|c| {
+            matches!(u32::from(*c),
+            0x1F300..=0x1FAFF | 0x2600..=0x27BF | 0x1F000..=0x1F2FF)
+        })
+        .count();
+    if emojis > 3 {
+        out.push(SlopFinding {
+            kind: "emoji overload",
+            line: format!("{emojis} emoji in one passage"),
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +477,87 @@ mod tests {
         assert!(check("md", "except:\n    pass\n// ===== X =====").is_empty());
         assert!(check("toml", "catch {}").is_empty());
         assert!(!check("rs", "catch {}").is_empty(), "rs IS a code surface");
+    }
+
+    #[test]
+    fn surfaces_of_maps_the_readme_matrix() {
+        use std::path::PathBuf;
+        assert_eq!(surfaces_of(&PathBuf::from("a.rs")), ["code"]);
+        assert_eq!(surfaces_of(&PathBuf::from("a.tsx")), ["code", "ui"]);
+        assert_eq!(surfaces_of(&PathBuf::from("btn.css")), ["ui"]);
+        assert_eq!(surfaces_of(&PathBuf::from("index.html")), ["ui"]);
+        assert_eq!(surfaces_of(&PathBuf::from("README.md")), ["copy"]);
+        assert!(surfaces_of(&PathBuf::from("Cargo.toml")).is_empty());
+    }
+
+    #[test]
+    fn ui_gate_flags_accessibility_and_invisible_text_breaks() {
+        let f = |src: &str| check_added_ui_text(&PathBuf::from(format!("x.{src}")), src_of(src));
+        fn src_of(s: &str) -> &'static str {
+            // helper indirection keeps the table readable
+            match s {
+                "html" => {
+                    "<meta name=\"viewport\" content=\"width=device-width, user-scalable=no\">"
+                }
+                "css" => "button:focus { outline: none }",
+                _ => "",
+            }
+        }
+        use std::path::PathBuf;
+        let vp = check_added_ui_text(
+            Path::new("x.html"),
+            "<meta name=\"viewport\" content=\"width=device-width, user-scalable=no\">",
+        );
+        assert_eq!(kinds(&vp), ["viewport zoom locked"]);
+        let legit = check_added_ui_text(Path::new("x.css"), "button:focus { outline: none }");
+        assert!(
+            legit.is_empty(),
+            "explicit :focus styling is legitimate: {legit:?}"
+        );
+        let removed = check_added_ui_text(Path::new("x.css"), "button { outline: none; }");
+        assert_eq!(kinds(&removed), ["focus indicator removed"]);
+        let noalt = check_added_ui_text(Path::new("x.jsx"), "<img src=\"logo.png\" />");
+        assert_eq!(kinds(&noalt), ["image without alt"]);
+        let withalt = check_added_ui_text(Path::new("x.jsx"), "<img src=\"a\" alt=\"Acme\" />");
+        assert!(withalt.is_empty());
+        let invisible = check_added_ui_text(
+            Path::new("x.css"),
+            ".hero { color: #fff; background: #fff; }",
+        );
+        assert_eq!(kinds(&invisible), ["same foreground and background color"]);
+        let grad = check_added_ui_text(
+            Path::new("x.css"),
+            ".hero { color: #fff; background: linear-gradient(#111, #333); }",
+        );
+        assert!(grad.is_empty(), "gradient backgrounds are fine: {grad:?}");
+        let _ = f;
+    }
+
+    #[test]
+    fn prose_gate_spots_ai_tells_and_emoji_spam() {
+        let f = check_prose_text("Our seamless platform is a game-changer for teams.");
+        let kinds: Vec<&str> = f.iter().map(|x| x.kind).collect();
+        assert_eq!(kinds, ["AI-tell buzzword", "AI-tell buzzword"]);
+        assert!(check_prose_text("The daemon pins children to 4 cores. Tests pass.").is_empty());
+        assert!(
+            check_prose_text("ship 🚀 it 🎉 today ✨ with ⚡ speed")
+                .iter()
+                .any(|x| x.kind == "emoji overload")
+        );
+        assert!(
+            !check_prose_text("ship 🚀 it today")
+                .iter()
+                .any(|x| x.kind == "emoji overload")
+        );
+    }
+
+    #[test]
+    fn long_hex_colors_normalized_before_match() {
+        let f = check_added_ui_text(
+            std::path::Path::new("x.css"),
+            ".hero { color: #FFFFFF; background: #FFFFFF; }",
+        );
+        assert_eq!(kinds(&f), ["same foreground and background color"]);
     }
 
     #[test]

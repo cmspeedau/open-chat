@@ -65,6 +65,7 @@ impl Diagnostics {
 #[derive(Debug, Default)]
 pub struct Surfaces {
     armed: StdMutex<Vec<(String, String)>>,
+    findings: AtomicUsize,
 }
 
 impl Surfaces {
@@ -95,6 +96,16 @@ impl Surfaces {
     #[must_use]
     pub fn list(&self) -> Vec<(String, String)> {
         self.armed.lock().expect("surfaces lock").clone()
+    }
+
+    /// Total advisory findings raised by surface gates this turn.
+    pub fn note_findings(&self, n: usize) {
+        self.findings.fetch_add(n, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn findings(&self) -> usize {
+        self.findings.load(Ordering::SeqCst)
     }
 }
 
@@ -459,32 +470,78 @@ impl Tool for ApplyPatchTool {
             // Code-surface gate: touching source arms the ruleset for the
             // rest of the turn, and added lines get the deterministic
             // slop checks (swallowed errors, decorative comments).
-            let source_hits: Vec<String> = parsed
-                .iter()
-                .filter(|f| openchat_tools::slop::is_source_path(&f.path))
-                .map(|f| f.path.display().to_string())
-                .collect();
-            if !source_hits.is_empty() {
-                self.surfaces.arm(
-                    "code",
-                    format!("patch touched source files: {}", source_hits.join(", ")),
-                );
-                let mut advisories = Vec::new();
-                for file in &parsed {
-                    let added = file
-                        .hunks
-                        .iter()
-                        .map(|h| h.replace.as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    for finding in openchat_tools::slop::check_added_source_text(&file.path, &added)
-                    {
-                        advisories.push(format!("{}: {}", file.path.display(), finding.render()));
+            // Operation-aware auto-binding (Phase 3): each touched file
+            // maps to its task surfaces; armed surfaces inject their
+            // ruleset into following prompts and their added lines run
+            // through the matching patch-time gate.
+            let mut touched: Vec<(&str, Vec<String>)> = Vec::new(); // surface -> files
+            for file in &parsed {
+                for surface in openchat_tools::slop::surfaces_of(&file.path) {
+                    if let Some((_, files)) = touched.iter_mut().find(|(s, _)| *s == *surface) {
+                        files.push(file.path.display().to_string());
+                    } else {
+                        touched.push((surface, vec![file.path.display().to_string()]));
                     }
                 }
-                if !advisories.is_empty() {
-                    text.push_str("\n\n[code-slop advisory - not a failure, fix if avoidable]\n");
-                    text.push_str(&advisories.join("\n"));
+            }
+            for (surface, files) in &touched {
+                self.surfaces
+                    .arm(surface, format!("patch touched: {}", files.join(", ")));
+            }
+            let mut advisories = Vec::new();
+            for file in &parsed {
+                let added = file
+                    .hunks
+                    .iter()
+                    .map(|h| h.replace.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut hits = openchat_tools::slop::check_added_source_text(&file.path, &added);
+                hits.extend(openchat_tools::slop::check_added_ui_text(
+                    &file.path, &added,
+                ));
+                hits.extend(openchat_tools::slop::check_prose_text(&added));
+                for finding in hits {
+                    advisories.push(format!("{}: {}", file.path.display(), finding.render()));
+                }
+            }
+            if !advisories.is_empty() {
+                self.surfaces.note_findings(advisories.len());
+                text.push_str("\n\n[code-slop advisory - not a failure, fix if avoidable]\n");
+                text.push_str(&advisories.join("\n"));
+            }
+            // Run the formatters the project actually has; disclose the rest.
+            let touched_files: Vec<std::path::PathBuf> = parsed
+                .iter()
+                .filter(|f| !f.hunks.iter().any(|h| h.delete))
+                .map(|f| f.path.clone())
+                .collect();
+            if !touched_files.is_empty() {
+                let results = openchat_tools::format::format_files(&self.root, &touched_files);
+                let mut formatted = Vec::new();
+                let mut unavailable = Vec::new();
+                for (path, outcome) in results {
+                    match outcome {
+                        openchat_tools::format::FormatOutcome::Formatted(tool) => {
+                            formatted.push(format!("{path} ({tool})"));
+                        }
+                        openchat_tools::format::FormatOutcome::NoFormatter => {}
+                        openchat_tools::format::FormatOutcome::Unavailable(tool) => {
+                            unavailable.push(format!("{path}: no {tool}"));
+                        }
+                        openchat_tools::format::FormatOutcome::Failed(err) => {
+                            unavailable.push(format!("{path}: {err}"));
+                        }
+                    }
+                }
+                if !formatted.is_empty() {
+                    text.push_str(&format!("\n\n[formatted] {}", formatted.join(", ")));
+                }
+                if !unavailable.is_empty() {
+                    text.push_str(&format!(
+                        "\n[formatter unavailable] {}",
+                        unavailable.join("; ")
+                    ));
                 }
             }
             // Autonomous verification, right here, before the model sees
@@ -994,6 +1051,65 @@ mod tests {
             .await;
         assert!(out.ok);
         assert!(!surfaces.is_armed("code"), "docs are not a code surface");
+    }
+
+    #[tokio::test]
+    async fn css_patch_arms_ui_surface_with_gate_advisory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("btn.css"), "button { color: red; }\n").unwrap();
+        let surfaces = Arc::new(Surfaces::new());
+        let reg = standard_registry(
+            governor(),
+            dir.path(),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+            Arc::clone(&surfaces),
+        );
+        let out = reg
+            .dispatch(&call(
+                "apply_patch",
+                &json!({"patches": "@@@ btn.css\n<<<<<<< SEARCH\nbutton { color: red; }\n=======\nbutton { outline: none; }\n>>>>>>> REPLACE\n"}).to_string(),
+            ))
+            .await;
+        assert!(surfaces.is_armed("ui"));
+        assert!(!surfaces.is_armed("code"), "css is ui-only per the matrix");
+        assert!(out.text.contains("focus indicator removed"), "{}", out.text);
+        assert!(surfaces.findings() >= 1);
+    }
+
+    #[tokio::test]
+    async fn formatter_runs_after_rs_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"t\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("m.rs"),
+            "pub fn  x(){}
+",
+        )
+        .unwrap();
+        let reg = standard_registry(
+            governor(),
+            dir.path(),
+            mem().await,
+            None,
+            Arc::new(Diagnostics::new()),
+            Arc::new(Surfaces::new()),
+        );
+        let out = reg
+            .dispatch(&call(
+                "apply_patch",
+                &json!({"patches": "@@@ m.rs\n<<<<<<< SEARCH\npub fn  x(){}\n=======\npub fn  x(){ let _ = 1 ;}\n>>>>>>> REPLACE\n"}).to_string(),
+            ))
+            .await;
+        assert!(out.ok, "{}", out.text);
+        assert!(
+            out.text.contains("[formatted]"),
+            "rustfmt should have run: {}",
+            out.text
+        );
+        let after = std::fs::read_to_string(dir.path().join("m.rs")).unwrap();
+        assert!(after.contains("pub fn x() {"), "formatted source: {after}");
     }
 
     #[tokio::test]

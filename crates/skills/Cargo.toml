@@ -1,12 +1,13 @@
 [package]
 name = "openchat-skills"
-description = "Stack fingerprinting, SKILL.md indexing registry, and skill-gap detection"
+description = "Stack fingerprinting, SKILL.md indexing registry, gap detection, and skill_bootstrap synthesis"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

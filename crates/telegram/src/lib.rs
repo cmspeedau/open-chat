@@ -49,6 +49,16 @@ pub trait EnginePort: Send + Sync {
 
     /// Live CPU cap change for `/cores 2` / `/cores 50%`.
     fn set_cores(&self, spec: String) -> std::result::Result<String, String>;
+
+    /// Active skills + gaps for `/skills`. Default: not supported.
+    fn skill_report(&self) -> BoxFuture<'_, Value> {
+        Box::pin(async { json!({"supported": false}) })
+    }
+
+    /// One-click `skill_bootstrap` for `/skill <lang>`.
+    fn bootstrap_skill(&self, _lang: String) -> std::result::Result<String, String> {
+        Err("this engine does not author skills".into())
+    }
 }
 
 /// Durable last-seen update id (backed by project memory in the daemon).
@@ -249,6 +259,23 @@ impl Bridge {
                 };
                 let _ = self.send_text(chat_id, &reply).await;
             }
+            "/skills" => {
+                let doc = self.engine.skill_report().await;
+                let reply = skill_summary(&doc);
+                let _ = self.send_text(chat_id, &reply).await;
+            }
+            "/skill" => {
+                let lang = words.next().unwrap_or_default().to_owned();
+                let reply = if lang.is_empty() {
+                    "usage: /skill <language> (fills one detected gap)".to_owned()
+                } else {
+                    match self.engine.bootstrap_skill(lang) {
+                        Ok(msg) => format!("✓ {msg}"),
+                        Err(e) => format!("skill error: {e}"),
+                    }
+                };
+                let _ = self.send_text(chat_id, &reply).await;
+            }
             other if other.starts_with('/') => {
                 let _ = self.send_text(chat_id, "unknown command; try /help").await;
             }
@@ -319,6 +346,34 @@ fn status_line(doc: &Value) -> String {
         doc["active_skills"].as_array().map_or(0, Vec::len),
         doc["memory_entries"].as_u64().unwrap_or(0),
     )
+}
+
+/// `/skills` render from the engine report doc.
+fn skill_summary(doc: &Value) -> String {
+    if doc.get("supported").and_then(Value::as_bool) == Some(false) {
+        return "skill report unsupported by this engine".to_owned();
+    }
+    let list = |k: &str| {
+        doc[k]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    };
+    let (active, gaps) = (list("active"), list("gaps"));
+    let mut out = format!(
+        "active: [{}]\ngaps: [{}]",
+        if active.is_empty() { "none" } else { &active },
+        if gaps.is_empty() { "none" } else { &gaps },
+    );
+    if !gaps.is_empty() {
+        out.push_str("\nfill one: /skill <lang>");
+    }
+    out
 }
 
 fn clamp_text(text: &str) -> String {
@@ -415,6 +470,7 @@ mod tests {
     struct FakeEngine {
         prompts: Mutex<Vec<String>>,
         cores: Mutex<Vec<String>>,
+        bootstrapped: Mutex<Vec<String>>,
         fail: bool,
     }
 
@@ -442,6 +498,13 @@ mod tests {
             self.cores.lock().unwrap().push(spec.clone());
             Ok(format!("cores now {spec}"))
         }
+        fn skill_report(&self) -> BoxFuture<'_, Value> {
+            Box::pin(async { json!({"supported": true, "active": ["rust"], "gaps": ["zig"]}) })
+        }
+        fn bootstrap_skill(&self, lang: String) -> std::result::Result<String, String> {
+            self.bootstrapped.lock().unwrap().push(lang.clone());
+            Ok(format!("created skill {lang}"))
+        }
     }
 
     struct MemOffset(AtomicI64);
@@ -466,6 +529,7 @@ mod tests {
         let engine = Arc::new(FakeEngine {
             prompts: Mutex::new(Vec::new()),
             cores: Mutex::new(Vec::new()),
+            bootstrapped: Mutex::new(Vec::new()),
             fail,
         });
         let offset = Arc::new(AtomicI64::new(0));
@@ -517,17 +581,35 @@ mod tests {
     async fn slash_commands_hit_engine_not_model() {
         let (b, mock, engine, _o) = bridge(
             false,
-            vec![json!([update(1, 42, "/cores 3"), update(2, 42, "/status")])],
+            vec![json!([
+                update(1, 42, "/cores 3"),
+                update(2, 42, "/status"),
+                update(3, 42, "/skills"),
+                update(4, 42, "/skill zig")
+            ])],
         )
         .await;
         b.tick().await.unwrap();
         assert_eq!(engine.cores.lock().unwrap().as_slice(), ["3"]);
-        assert!(engine.prompts.lock().unwrap().is_empty());
+        assert_eq!(engine.bootstrapped.lock().unwrap().as_slice(), ["zig"]);
+        assert!(
+            engine.prompts.lock().unwrap().is_empty(),
+            "commands must not bill the model"
+        );
         let sent = mock.sent(42);
         assert!(sent.iter().any(|t| t == "cpu: cores now 3"), "{sent:?}");
         assert!(
             sent.iter()
                 .any(|t| t.contains("model mock") && t.contains("2/8")),
+            "{sent:?}"
+        );
+        assert!(
+            sent.iter()
+                .any(|t| t.contains("active: [rust]") && t.contains("gaps: [zig]")),
+            "{sent:?}"
+        );
+        assert!(
+            sent.iter().any(|t| t.contains("created skill zig")),
             "{sent:?}"
         );
     }
@@ -559,6 +641,7 @@ mod tests {
         let engine = Arc::new(FakeEngine {
             prompts: Mutex::new(Vec::new()),
             cores: Mutex::new(Vec::new()),
+            bootstrapped: Mutex::new(Vec::new()),
             fail: false,
         });
         let offsets = Arc::new(MemOffset(AtomicI64::new(0)));

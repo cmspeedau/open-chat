@@ -13,7 +13,10 @@ use openchat_memory::MemoryStore;
 use openchat_tools::compact::{ToolRecord, Transcript};
 use tokio::sync::Mutex;
 
-use crate::compositor::{CODE_SURFACE_RULES, Composed, Compositor, MEMORY_SAFETY_RULES};
+use crate::compositor::{
+    CODE_SURFACE_RULES, COPY_SURFACE_RULES, Composed, Compositor, MEMORY_SAFETY_RULES,
+    UI_SURFACE_RULES,
+};
 use crate::events::{Badges, TurnEvent};
 use crate::provider::{ChatMessage, ChatRequest, Provider, ToolCall};
 use crate::slop::strip_leading_slop;
@@ -27,6 +30,8 @@ use crate::tools::{ApplyPatchTool, Diagnostics, Registry, Surfaces};
 fn surface_rules(surface: &str) -> Option<&'static str> {
     match surface {
         "code" => Some(CODE_SURFACE_RULES),
+        "ui" => Some(UI_SURFACE_RULES),
+        "copy" => Some(COPY_SURFACE_RULES),
         _ => None,
     }
 }
@@ -270,6 +275,23 @@ impl<'a> Agent<'a> {
                             on_event(&AgentEvent::FinalVerification { ok });
                             self.publish(TurnEvent::FinalVerification { ok });
                         }
+                        // Prose gate (copy surface): screen the final
+                        // answer and disclose; never silently rewrite.
+                        if self.surfaces.as_ref().is_some_and(|x| x.is_armed("copy"))
+                            && !clean_text.is_empty()
+                        {
+                            let findings: Vec<String> =
+                                openchat_tools::slop::check_prose_text(clean_text)
+                                    .into_iter()
+                                    .map(|f| f.render())
+                                    .collect();
+                            if !findings.is_empty() {
+                                if let Some(x) = &self.surfaces {
+                                    x.note_findings(findings.len());
+                                }
+                                self.publish(TurnEvent::ProseGate { findings });
+                            }
+                        }
                         final_text = Some(clean_text.to_owned());
                         break;
                     }
@@ -385,6 +407,9 @@ impl<'a> Agent<'a> {
                 slop_stripped_bytes: slop,
                 deduped_rule_lines: composed.deduped_rule_lines,
                 memory_faults: self.diagnostics.as_ref().map_or(0, |d| d.count()),
+                prose_findings: self.surfaces.as_ref().map_or(0, |s| s.findings()),
+                checks_run: Vec::new(),
+                checks_skipped: Vec::new(),
                 armed_surfaces: self
                     .surfaces
                     .as_ref()

@@ -170,6 +170,10 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
             eprintln!("· ◇ {surface}-surface rules bound: {reason}");
             false
         }
+        TurnEvent::ProseGate { findings } => {
+            eprintln!("· ✎ prose gate: {}", findings.join(" | "));
+            false
+        }
         TurnEvent::TurnClosed {
             text,
             iterations,
@@ -188,7 +192,7 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
             };
             eprintln!(
                 "· closed in {iterations} iterations · stack=[{}] skills=[{skills}] \
-                 surfaces=[{}] prompt={}t governor={}/{} cores {} slot(s) memory={} dedup={} slop={}B faults={}",
+                 surfaces=[{}] checks=[{}] skipped=[{}] prompt={}t governor={}/{} cores {} slot(s) memory={} dedup={} slop={}B faults={} prose={}",
                 if badges.stack.is_empty() {
                     "none"
                 } else {
@@ -199,6 +203,16 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
                 } else {
                     badges.armed_surfaces.join(",")
                 },
+                if badges.checks_run.is_empty() {
+                    "none".to_owned()
+                } else {
+                    badges.checks_run.join(",")
+                },
+                if badges.checks_skipped.is_empty() {
+                    "none".to_owned()
+                } else {
+                    badges.checks_skipped.join(",")
+                },
                 badges.prompt_tokens,
                 badges.cores,
                 badges.usable_cores,
@@ -207,6 +221,7 @@ fn print_turn_event(ev: &TurnEvent) -> bool {
                 badges.deduped_rule_lines,
                 badges.slop_stripped_bytes,
                 badges.memory_faults,
+                badges.prose_findings,
             );
             true
         }
@@ -280,6 +295,17 @@ async fn skills_main(argv: &[String]) -> Result<()> {
     let mut argv = argv.to_vec();
     let (config_path, _light) = extract_flags(&mut argv);
     let json = argv.iter().any(|a| a == "--json");
+    // `skills --bootstrap <lang>`: one-click gap fill (Phase 3 synthesizer).
+    if let Some(i) = argv.iter().position(|a| a == "--bootstrap")
+        && i + 1 < argv.len()
+    {
+        let lang_name = argv[i + 1].clone();
+        argv.truncate(i);
+        let cwd = std::env::current_dir().context("failed to resolve cwd")?;
+        return bootstrap_skill(&cwd, &lang_name);
+    } else if argv.iter().any(|a| a == "--bootstrap") {
+        anyhow::bail!("--bootstrap requires a language, e.g. --bootstrap zig");
+    }
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
     let engine = Engine::build(&cwd, config_path.as_deref())?;
@@ -517,6 +543,40 @@ async fn daemon_main(argv: &[String]) -> Result<()> {
         .compact()
         .context("final memory compaction failed")?;
     Ok(())
+}
+
+/// Write a starter SKILL.md for an uncovered stack language.
+fn bootstrap_skill(cwd: &std::path::Path, lang_name: &str) -> Result<()> {
+    let lang = openchat_skills::Language::ALL
+        .iter()
+        .copied()
+        .find(|l| l.as_str() == lang_name.trim().to_ascii_lowercase())
+        .with_context(|| {
+            format!(
+                "unknown language {lang_name:?}; known: {}",
+                openchat_skills::Language::ALL
+                    .iter()
+                    .map(|l| l.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    match openchat_skills::bootstrap(cwd, lang) {
+        Ok(path) => {
+            println!("bootstrapped {}", path.display());
+            println!(
+                "edit the skeleton with real project conventions; it binds on the next `skills` pass"
+            );
+            Ok(())
+        }
+        Err(openchat_skills::synthesize::BootstrapError::Exists(p)) => {
+            anyhow::bail!(
+                "{} already exists - edit it instead of re-bootstrapping",
+                p.display()
+            )
+        }
+        Err(e) => Err(anyhow::anyhow!("bootstrap failed: {e}")),
+    }
 }
 
 #[cfg(test)]

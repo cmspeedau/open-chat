@@ -445,10 +445,10 @@ The `open-chat` implementation is structured into phased milestones addressing a
 ### Phase 3: 50+ Skill Scale, Full-Spectrum Anti-Slop & Stack Discovery
 - [x] **Deterministic Stack Fingerprinter:** Real-time workspace scanner detecting active languages (`Cargo.toml`, `package.json`, `go.mod`, etc.).
 - [x] **55+ Skill Index Registry:** YAML frontmatter parser and indexing engine mapping skills to languages, globs, dependencies, and execution modes.
-- [ ] **Full-Spectrum Anti-Slop Skill Suite:** Integrate Code, UI/Design/Mobile, Copywriting/Human, and core Anti-Slop skills from the [reference repository](https://github.com/miqdadbadjuber/anti-slop); preserve scoped rules and provenance.
-- [ ] **Operation-Aware Auto-Binding:** Bind UI rules for `.tsx`/`.css`, Code rules for `.rs`/`.ts`, and Copywriting rules for `.md`/`.txt` create/edit/review operations, with intent- and manifest-based routing beyond extensions.
-- [ ] **Runtime Stream & Surface Filtering:** Enforce output/prose gates and patch-time code/UI checks, then run available formatters, linters, accessibility/contrast and responsive checks. Record actual results and disclose unavailable checks.
-- [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks or content surfaces with one-click `skill_bootstrap` authoring.
+- [x] **Full-Spectrum Anti-Slop Skill Suite:** Integrate Code, UI/Design/Mobile, Copywriting/Human, and core Anti-Slop skills from the [reference repository](https://github.com/miqdadbadjuber/anti-slop); preserve scoped rules and provenance.
+- [x] **Operation-Aware Auto-Binding:** Bind UI rules for `.tsx`/`.css`, Code rules for `.rs`/`.ts`, and Copywriting rules for `.md`/`.txt` create/edit/review operations, with intent- and manifest-based routing beyond extensions.
+- [x] **Runtime Stream & Surface Filtering:** Enforce output/prose gates and patch-time code/UI checks, then run available formatters, linters, accessibility/contrast and responsive checks. Record actual results and disclose unavailable checks.
+- [x] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks or content surfaces with one-click `skill_bootstrap` authoring.
 
 ### Phase 4: Context Compositor & Observability
 - [x] **Context Compositor Pipeline:** Pre-flight prompt assembler that injects Anti-Slop Law, deduplicates rules, and enforces strict token budgets.

@@ -30,6 +30,106 @@ pub struct Engine {
     pub llm: LlmSettings,
     pub skills: SkillsSettings,
     pub telegram: TelegramSettings,
+    /// Selected verification command (label + argv), if the machine can run one.
+    pub verifier: Option<(String, Vec<String>)>,
+    /// Stack-implied checks unavailable on this host, disclosed not faked.
+    pub checks_skipped: Vec<String>,
+}
+
+/// Pick the verification command from the stack, only choosing tools the
+/// machine actually has; every implied-but-missing check is disclosed.
+/// An explicit `[llm] verify_command` always wins.
+#[must_use]
+pub fn detect_verifier(
+    cwd: &std::path::Path,
+    fp: &openchat_skills::Fingerprint,
+    override_cmd: Option<&Vec<String>>,
+) -> (Option<(String, Vec<String>)>, Vec<String>) {
+    if let Some(cmd) = override_cmd {
+        return (Some((cmd.join(" "), cmd.clone())), Vec::new());
+    }
+    let mut skipped = Vec::new();
+    for lang in &fp.languages {
+        let (label, cmd, has): (&str, Vec<&str>, bool) = match lang {
+            openchat_skills::Language::Rust => (
+                "cargo check --workspace",
+                vec!["cargo", "check", "--workspace"],
+                openchat_tools::format::which("cargo"),
+            ),
+            openchat_skills::Language::TypeScript | openchat_skills::Language::JavaScript => (
+                "tsc --noEmit",
+                vec!["npx", "--no-install", "tsc", "--noEmit"],
+                cwd.join("tsconfig.json").is_file()
+                    && (cwd.join("node_modules/.bin/tsc").exists()
+                        || openchat_tools::format::which("tsc")),
+            ),
+            openchat_skills::Language::Go => (
+                "go vet ./...",
+                vec!["go", "vet", "./..."],
+                openchat_tools::format::which("go"),
+            ),
+            openchat_skills::Language::Python => (
+                "ruff check .",
+                vec!["ruff", "check", "."],
+                openchat_tools::format::which("ruff"),
+            ),
+            other => {
+                skipped.push(format!("{}: no verifier implemented", other.as_str()));
+                continue;
+            }
+        };
+        if has {
+            return (
+                Some((
+                    label.to_owned(),
+                    cmd.into_iter().map(str::to_owned).collect(),
+                )),
+                skipped,
+            );
+        }
+        skipped.push(format!("{}: {label} unavailable", lang.as_str()));
+    }
+    (None, skipped)
+}
+
+/// Keyword-based intent routing: prose/design asks arm their surface even
+/// before a file is touched ("intent- and manifest-based routing beyond
+/// extensions").
+#[must_use]
+pub fn intent_surfaces(prompt: &str) -> Vec<(&'static str, &'static str)> {
+    let p = prompt.to_ascii_lowercase();
+    let mut hits = Vec::new();
+    if [
+        "design",
+        "css",
+        "layout",
+        "styling",
+        "frontend",
+        "component",
+        "landing",
+        "responsive",
+    ]
+    .iter()
+    .any(|k| p.contains(k))
+    {
+        hits.push(("ui", "prompt intent suggests UI work"));
+    }
+    if [
+        "copywriting",
+        "headline",
+        "tagline",
+        "prose",
+        "blog",
+        "readme",
+        "docs page",
+        "marketing",
+    ]
+    .iter()
+    .any(|k| p.contains(k))
+    {
+        hits.push(("copy", "prompt intent suggests prose work"));
+    }
+    hits
 }
 
 /// Skill catalog search roots: configured paths, then project-local, then
@@ -53,6 +153,14 @@ impl Engine {
             MemoryStore::open(&cwd.join(".openchat").join("memory.sqlite"), VECTOR_DIMS)
                 .context("failed to open workspace memory")?,
         ));
+        let fp = openchat_skills::fingerprint(cwd);
+        let (verifier, checks_skipped) = detect_verifier(cwd, &fp, llm.verify_command.as_ref());
+        if let Some((label, _)) = &verifier {
+            tracing::info!(verifier = %label, "verification command selected");
+        }
+        for note in &checks_skipped {
+            tracing::warn!(check = %note, "verifier unavailable, disclosing instead of faking");
+        }
         Ok(Self {
             cwd: cwd.to_path_buf(),
             governor,
@@ -60,6 +168,8 @@ impl Engine {
             llm,
             skills,
             telegram,
+            verifier,
+            checks_skipped,
         })
     }
 
@@ -90,12 +200,6 @@ impl Engine {
             self.skills.total_max_tokens,
         );
 
-        let verifier = self.llm.verify_command.clone().or_else(|| {
-            self.cwd
-                .join("Cargo.toml")
-                .is_file()
-                .then(|| vec!["cargo".into(), "check".into(), "--workspace".into()])
-        });
         let diagnostics = Arc::new(openchat_session::tools::Diagnostics::new());
         let surfaces = Arc::new(openchat_session::tools::Surfaces::new());
         // Code stack => the code-surface pack is applicable before the
@@ -103,6 +207,17 @@ impl Engine {
         if !fp.languages.is_empty() {
             surfaces.arm("code", format!("detected code stack: {}", fp.stack_tag()));
         }
+        // UI manifest evidence (components/styles present) pre-binds the UI pack.
+        let ui_evidence = ["tsx", "jsx", "css", "scss", "html"]
+            .iter()
+            .any(|e| fp.counts.get(*e).is_some_and(|n| *n > 0));
+        if ui_evidence {
+            surfaces.arm("ui", "workspace contains UI files");
+        }
+        for (surface, reason) in intent_surfaces(prompt) {
+            surfaces.arm(surface, reason);
+        }
+        let verifier = self.verifier.as_ref().map(|(_, args)| args.clone());
         let registry = standard_registry(
             Arc::clone(&self.governor),
             &self.cwd,
@@ -125,6 +240,12 @@ impl Engine {
         let store = Arc::clone(&self.store);
         let badges_diag = Arc::clone(&diagnostics);
         let badges_surfaces = Arc::clone(&surfaces);
+        let badges_checks_run: Vec<String> = self
+            .verifier
+            .as_ref()
+            .map(|(label, _)| vec![label.clone()])
+            .unwrap_or_default();
+        let badges_checks_skipped = self.checks_skipped.clone();
 
         let mut agent = Agent::new(&provider, &registry, Some(Arc::clone(&self.store)))
             .with_budget(self.llm.max_total_tokens, 8)
@@ -149,6 +270,9 @@ impl Engine {
                     slop_stripped_bytes: slop,
                     deduped_rule_lines: composed.deduped_rule_lines,
                     memory_faults: badges_diag.count(),
+                    prose_findings: badges_surfaces.findings(),
+                    checks_run: badges_checks_run.clone(),
+                    checks_skipped: badges_checks_skipped.clone(),
                     armed_surfaces: badges_surfaces
                         .list()
                         .into_iter()
@@ -206,6 +330,8 @@ impl Engine {
             "active_skills": bindings.iter().map(|b| b.skill.id.as_str()).collect::<Vec<_>>(),
             "skill_gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
             "llm_model": self.llm.model,
+            "verifier": self.verifier.as_ref().map(|(label, _)| label.clone()),
+            "checks_skipped": self.checks_skipped,
         })
     }
 }
@@ -249,6 +375,31 @@ impl EnginePort for Engine {
     fn set_cores(&self, spec: String) -> std::result::Result<String, String> {
         Engine::set_cores(self, &spec)
     }
+
+    fn skill_report(&self) -> tg::BoxFuture<'_, serde_json::Value> {
+        Box::pin(async {
+            let fp = openchat_skills::fingerprint(&self.cwd);
+            let catalog = openchat_skills::load_roots(&skill_roots(&self.cwd, &self.skills));
+            let (bindings, gaps) = openchat_skills::bind(&fp, &catalog);
+            serde_json::json!({
+                "supported": true,
+                "stack": fp.stack_tag(),
+                "active": bindings.iter().map(|b| b.skill.id.as_str()).collect::<Vec<_>>(),
+                "gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
+            })
+        })
+    }
+
+    fn bootstrap_skill(&self, lang: String) -> std::result::Result<String, String> {
+        let found = openchat_skills::Language::ALL
+            .iter()
+            .copied()
+            .find(|l| l.as_str() == lang.trim().to_ascii_lowercase())
+            .ok_or_else(|| format!("unknown language {lang:?}"))?;
+        openchat_skills::bootstrap(&self.cwd, found)
+            .map(|p| format!("created {}", p.display()))
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Update offset persisted in project memory: survives restarts alongside
@@ -289,5 +440,68 @@ impl tg::OffsetStore for MemoryOffsetStore {
                 tracing::warn!(error = %e, "telegram offset persist failed");
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openchat_skills::{Fingerprint, Language};
+    use std::collections::BTreeMap;
+
+    fn fp(langs: &[Language]) -> Fingerprint {
+        Fingerprint {
+            languages: langs.to_vec(),
+            manifests: vec![],
+            counts: BTreeMap::new(),
+            files_scanned: 0,
+        }
+    }
+
+    #[test]
+    fn explicit_verify_wins() {
+        let (v, skipped) = detect_verifier(
+            std::path::Path::new("/nowhere"),
+            &fp(&[Language::Rust]),
+            Some(&vec!["true".into()]),
+        );
+        assert_eq!(v.unwrap().0, "true");
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn rust_stack_picks_cargo_when_present() {
+        let (v, skipped) =
+            detect_verifier(std::path::Path::new("/tmp"), &fp(&[Language::Rust]), None);
+        if openchat_tools::format::which("cargo") {
+            assert_eq!(v.unwrap().0, "cargo check --workspace");
+            assert!(skipped.is_empty());
+        } else {
+            assert!(v.is_none());
+            assert_eq!(skipped, ["rust: cargo check --workspace unavailable"]);
+        }
+    }
+
+    #[test]
+    fn missing_tools_are_disclosed_not_faked() {
+        // Zig has no implemented verifier: disclosure, never a silent pass.
+        let (v, skipped) =
+            detect_verifier(std::path::Path::new("/tmp"), &fp(&[Language::Zig]), None);
+        assert!(v.is_none());
+        assert_eq!(skipped, ["zig: no verifier implemented"]);
+    }
+
+    #[test]
+    fn intent_routing_flags_ui_and_copy() {
+        assert!(
+            intent_surfaces("redesign the landing page styling")
+                .contains(&("ui", "prompt intent suggests UI work"))
+        );
+        assert!(
+            intent_surfaces("write the blog post headline")
+                .iter()
+                .any(|(s, _)| *s == "copy")
+        );
+        assert!(intent_surfaces("fix the parser loop").is_empty());
     }
 }

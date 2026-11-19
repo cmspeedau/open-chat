@@ -14,7 +14,7 @@ pub mod provider;
 pub mod slop;
 pub mod tools;
 
-pub use agent::{Agent, AgentEvent, AgentOutcome};
+pub use agent::{Agent, AgentEvent, AgentOutcome, Usage};
 pub use compositor::{Composed, Compositor};
 pub use events::{Badges, SkillBadge, TurnEvent};
 pub use provider::{OpenAi, OpenAiConfig, Provider, ProviderError};

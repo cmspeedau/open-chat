@@ -33,6 +33,11 @@ pub struct Badges {
     pub memory_faults: usize,
     /// Task surfaces auto-bound this turn ("code", "ui", "copy").
     pub armed_surfaces: Vec<String>,
+    /// Provider-reported usage for this turn; nulls when the backend does
+    /// not report (opencode gateway), never faked from estimates.
+    pub usage_input_tokens: Option<u64>,
+    pub usage_output_tokens: Option<u64>,
+    pub usage_via: String,
     /// Prose-gate findings on the final answer (disclosed, never rewritten).
     pub prose_findings: usize,
     /// Verification commands actually available and selected this turn.
@@ -86,11 +91,14 @@ pub enum TurnEvent {
     ProseGate {
         findings: Vec<String>,
     },
-    /// Turn finished; `text` is the clean final answer.
+    /// Turn finished; `text` is the clean final answer. `Badges` is boxed
+    /// so one large telemetry struct per turn does not bloat every other
+    /// event variant (clippy::large_enum_variant); serde serializes `Box`
+    /// transparently, so the SSE wire format is unchanged.
     TurnClosed {
         text: String,
         iterations: usize,
-        badges: Badges,
+        badges: Box<Badges>,
     },
     /// Turn failed (provider error, budget). Message is user-presentable.
     TurnFailed {

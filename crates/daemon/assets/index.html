@@ -85,6 +85,13 @@ button:focus-visible, summary:focus-visible, [role="menuitem"]:focus-visible {
 #modelMenu button[aria-current="true"] { color: var(--accent); }
 #modelMenu .menustate { color: var(--muted); padding: 8px 10px; }
 
+#usagebar {
+  border-bottom: 1px solid var(--line); padding: 6px 16px;
+  font: 12px var(--mono); color: var(--muted);
+  display: flex; gap: 14px; flex-wrap: wrap;
+}
+#usagebar b { color: var(--text); font-weight: 600; }
+#usagebar .quota.warn { color: var(--warn); }
 main { max-width: 980px; margin: 0 auto; padding: 16px 18px 120px; }
 #badges {
   display: none; flex-wrap: wrap; gap: 6px; margin: 4px 0 18px;
@@ -177,6 +184,9 @@ textarea {
   <button id="gear" class="iconbtn" aria-label="Status and settings">&#9881;</button>
   <span id="conn"><span class="dot" id="dot"></span><span id="connText">idle</span></span>
 </header>
+<div id="usagebar" role="status" aria-label="token usage">
+  <span>usage <b>&hellip;</b></span>
+</div>
 <nav id="modelMenu" role="menu" aria-label="model picker"><div class="menustate">loading models&hellip;</div></nav>
 <main>
   <div id="badges" aria-live="polite"></div>
@@ -298,6 +308,51 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeMenu(); closeModal(); }
 });
 
+/* ---------- usage bar (GET /usage: ledger + gateway quota) ---------- */
+let lastUsage = null;
+const fmtK = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+const turnsWord = (n) => n + (n === 1 ? " turn" : " turns");
+async function refreshUsage() {
+  try {
+    const res = await fetch("/usage");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const u = await res.json();
+    lastUsage = u;
+    const bar = $("usagebar");
+    bar.replaceChildren();
+    const total = document.createElement("span");
+    total.innerHTML = "usage <b>" + turnsWord(u.turns || 0) + "</b> · <b>" +
+      fmtK(u.reported_input || 0) + "</b> in / <b>" + fmtK(u.reported_output || 0) + "</b> out";
+    bar.appendChild(total);
+    if (u.estimated_turns) {
+      const e = document.createElement("span");
+      e.textContent = "+" + turnsWord(u.estimated_turns) + " unreported by gateway";
+      bar.appendChild(e);
+    }
+    const lim = u.limits && !u.limits.error ? u.limits : null;
+    if (lim && lim.go) {
+      for (const [k, label] of [["rolling", "rolling"], ["weekly", "weekly"], ["monthly", "monthly"]]) {
+        const q = lim.go[k];
+        if (!q) continue;
+        const el = document.createElement("span");
+        el.className = "quota" + (q.percent >= 90 ? " warn" : "");
+        const num = document.createElement("b");
+        num.textContent = Math.round(q.percent) + "%";
+        el.append("go " + label + " ");
+        el.appendChild(num);
+        if (q.limited) el.append(" (limited)");
+        bar.appendChild(el);
+      }
+    }
+  } catch (err) {
+    const bar = $("usagebar");
+    bar.replaceChildren();
+    const e = document.createElement("span");
+    e.textContent = "usage unavailable: " + err.message;
+    bar.appendChild(e);
+  }
+}
+
 /* ---------- status modal (populates from GET /status) ---------- */
 function openModal(doc) {
   const m = $("modal");
@@ -331,6 +386,16 @@ function openModal(doc) {
     if ((doc.skill_gaps || []).length) add("gaps", doc.skill_gaps.join(", ") +
       " (fill via the daemon: skills --bootstrap <lang>)");
     add("memory", (doc.memory_entries ?? "?") + " entries", doc.memory_entries ? "" : "none");
+    if (lastUsage) {
+      add("usage totals",
+        turnsWord(lastUsage.turns ?? 0) + " · " + (lastUsage.reported_input ?? 0) + " in / " +
+        (lastUsage.reported_output ?? 0) + " out" +
+        (lastUsage.estimated_turns ? " (+" + turnsWord(lastUsage.estimated_turns) + " unreported by gateway)" : ""));
+      const recent = (lastUsage.recent || []).slice(0, 6)
+        .map(r => r.model + " " + (r.input ?? "~") + "/" + (r.output ?? "~"))
+        .join(" · ");
+      if (recent) add("recent turns", recent);
+    }
   }
   m.classList.add("open");
   $("closeModal").focus();
@@ -456,6 +521,7 @@ async function runTurn(prompt, key, turn, seen) {
       case "assistant_text":
         break; // full answer arrives on turn_closed
       case "turn_closed": {
+        refreshUsage();
         const a = turn.querySelector(".answer");
         a.hidden = false;
         a.textContent = ev.text;
@@ -522,6 +588,7 @@ $("prompt").addEventListener("input", function () {
   this.style.height = Math.min(this.scrollHeight, 160) + "px";
 });
 conn("", "idle");
+refreshUsage();
 // Deep link: ?prompt=... prefills the composer (never auto-submits).
 try {
   const qp = new URLSearchParams(location.search).get("prompt");

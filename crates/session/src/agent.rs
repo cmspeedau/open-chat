@@ -75,6 +75,9 @@ pub struct AgentOutcome {
     /// Bytes of conversational filler the stream interceptor removed from
     /// model output this turn (Anti-Slop Law telemetry).
     pub slop_stripped_bytes: usize,
+    /// Provider-reported token usage accumulated across all iterations of
+    /// this turn.
+    pub usage: Usage,
 }
 
 pub struct Agent<'a> {
@@ -84,6 +87,8 @@ pub struct Agent<'a> {
     memory: Option<Arc<Mutex<MemoryStore>>>,
     /// Bound skill (id, body) pairs injected into System Frame #0.
     skills: Vec<(String, String)>,
+    /// Backend label for usage accounting ("openai-compat" | "opencode").
+    via: String,
     model: String,
     max_iterations: usize,
     /// Optional wire-event fan-out for remote interfaces (SSE, bots).
@@ -98,7 +103,33 @@ pub struct Agent<'a> {
 
 /// Supplies the badges document at turn close from the final composition
 /// and the stripped-filler byte count.
-pub type BadgesFn = Box<dyn Fn(&Composed, usize) -> Badges + Send + Sync>;
+pub type BadgesFn = Box<dyn Fn(&Composed, usize, Usage) -> Badges + Send + Sync>;
+
+/// Token usage a single turn actually consumed, as reported by the
+/// provider. OpenAI-compatible backends send real counts; gateway-style
+/// backends (opencode generate) report none and we say so rather than
+/// passing estimates off as measured.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Usage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub model: String,
+    /// "openai-compat" | "opencode" | ... for per-backend accounting.
+    pub via: String,
+}
+
+impl Usage {
+    #[must_use]
+    pub fn reported(&self) -> bool {
+        self.input_tokens.is_some() || self.output_tokens.is_some()
+    }
+
+    fn merge(&mut self, other: &Usage) {
+        self.input_tokens = Some(self.input_tokens.unwrap_or(0) + other.input_tokens.unwrap_or(0));
+        self.output_tokens =
+            Some(self.output_tokens.unwrap_or(0) + other.output_tokens.unwrap_or(0));
+    }
+}
 
 impl<'a> Agent<'a> {
     #[must_use]
@@ -114,6 +145,7 @@ impl<'a> Agent<'a> {
             memory,
             skills: Vec::new(),
             model: String::new(),
+            via: "openai-compat".into(),
             max_iterations: 8,
             publisher: None,
             badges_fn: None,
@@ -135,7 +167,7 @@ impl<'a> Agent<'a> {
     #[must_use]
     pub fn with_badges(
         mut self,
-        f: impl Fn(&Composed, usize) -> Badges + Send + Sync + 'static,
+        f: impl Fn(&Composed, usize, Usage) -> Badges + Send + Sync + 'static,
     ) -> Self {
         self.badges_fn = Some(Box::new(f));
         self
@@ -181,6 +213,13 @@ impl<'a> Agent<'a> {
         self
     }
 
+    /// Backend label carried into every usage record.
+    #[must_use]
+    pub fn with_via(mut self, via: impl Into<String>) -> Self {
+        self.via = via.into();
+        self
+    }
+
     /// Run one turn to completion (or budget error).
     pub async fn run(
         &self,
@@ -194,6 +233,12 @@ impl<'a> Agent<'a> {
         let mut final_text: Option<String> = None;
         let mut slop_stripped_bytes = 0usize;
         let mut iterations = 0usize;
+        let mut usage = Usage {
+            model: self.model.clone(),
+            via: self.via.clone(),
+            ..Default::default()
+        };
+        let mut usage_seen_any = false;
         self.publish(TurnEvent::TurnStarted {
             prompt: user.to_owned(),
         });
@@ -255,6 +300,21 @@ impl<'a> Agent<'a> {
                     return Err(e.into());
                 }
             };
+
+            let resp_usage = Usage {
+                input_tokens: resp.input_tokens,
+                output_tokens: resp.output_tokens,
+                model: self.model.clone(),
+                via: self.via.clone(),
+            };
+            if resp_usage.reported() {
+                if usage_seen_any {
+                    usage.merge(&resp_usage);
+                } else {
+                    usage = resp_usage;
+                    usage_seen_any = true;
+                }
+            }
 
             // Enforcement point 2: leading filler never reaches history,
             // events, or the user; the byte count is kept as telemetry.
@@ -367,11 +427,11 @@ impl<'a> Agent<'a> {
         };
         match final_text {
             Some(text) => {
-                let badges = self.build_badges(&composed, slop_stripped_bytes);
+                let badges = self.build_badges(&composed, slop_stripped_bytes, usage.clone());
                 self.publish(TurnEvent::TurnClosed {
                     text: text.clone(),
                     iterations,
-                    badges,
+                    badges: Box::new(badges),
                 });
                 Ok(AgentOutcome {
                     text,
@@ -379,6 +439,7 @@ impl<'a> Agent<'a> {
                     records,
                     composed,
                     slop_stripped_bytes,
+                    usage,
                 })
             }
             None => {
@@ -398,7 +459,7 @@ impl<'a> Agent<'a> {
         }
     }
 
-    fn build_badges(&self, composed: &Composed, slop: usize) -> Badges {
+    fn build_badges(&self, composed: &Composed, slop: usize, usage: Usage) -> Badges {
         self.badges_fn.as_ref().map_or_else(
             || Badges {
                 stack: String::new(),
@@ -410,6 +471,9 @@ impl<'a> Agent<'a> {
                 memory_entries: 0,
                 slop_stripped_bytes: slop,
                 deduped_rule_lines: composed.deduped_rule_lines,
+                usage_input_tokens: None,
+                usage_output_tokens: None,
+                usage_via: self.via.clone(),
                 memory_faults: self.diagnostics.as_ref().map_or(0, |d| d.count()),
                 prose_findings: self.surfaces.as_ref().map_or(0, |s| s.findings()),
                 checks_run: Vec::new(),
@@ -420,7 +484,7 @@ impl<'a> Agent<'a> {
                     .map(|s| s.list().into_iter().map(|(name, _)| name).collect())
                     .unwrap_or_default(),
             },
-            |f| f(composed, slop),
+            |f| f(composed, slop, usage),
         )
     }
 

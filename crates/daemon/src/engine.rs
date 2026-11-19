@@ -261,7 +261,8 @@ impl Engine {
                     .map(|s| (s.id.clone(), s.body.clone()))
                     .collect(),
             )
-            .with_badges(move |composed, slop| {
+            .with_via(self.llm.provider.clone())
+            .with_badges(move |composed, slop, turn_usage| {
                 let snap = governor.snapshot();
                 Badges {
                     stack: badges_stack.clone(),
@@ -273,6 +274,9 @@ impl Engine {
                     memory_entries: store.try_lock().map_or(0, |m| m.count().unwrap_or(0)),
                     slop_stripped_bytes: slop,
                     deduped_rule_lines: composed.deduped_rule_lines,
+                    usage_input_tokens: turn_usage.input_tokens,
+                    usage_output_tokens: turn_usage.output_tokens,
+                    usage_via: turn_usage.via.clone(),
                     memory_faults: badges_diag.count(),
                     prose_findings: badges_surfaces.findings(),
                     checks_run: if badges_diag.verifications() > 0 {
@@ -291,7 +295,37 @@ impl Engine {
         if let Some(tx) = publisher {
             agent = agent.with_publisher(tx);
         }
-        agent.run(prompt, on_event).await
+        let outcome = agent.run(prompt, on_event).await?;
+        if let Err(e) = crate::usage::record(
+            &self.cwd,
+            &crate::usage::entry_from(
+                &outcome.usage,
+                outcome.composed.total_tokens,
+                outcome.iterations,
+            ),
+        ) {
+            tracing::warn!(error = %e, "usage ledger write failed (turn itself closed normally)");
+        }
+        Ok(outcome)
+    }
+
+    /// Panel document: ledger totals + recent turns, plus live gateway
+    /// quota when the configured backend can report one.
+    pub async fn usage_doc(&self) -> serde_json::Value {
+        let mut doc = crate::usage::summary(&self.cwd, 12);
+        let limits = if self.llm.provider == "opencode" {
+            match self.build_opencode() {
+                Ok(p) => match p.usage_limits().await {
+                    Ok(v) => v,
+                    Err(e) => json!({"error": e.to_string()}),
+                },
+                Err(e) => json!({"error": e.to_string()}),
+            }
+        } else {
+            serde_json::Value::Null
+        };
+        doc["limits"] = limits;
+        doc
     }
 
     /// Live core-budget change (`/cores 2` from any interface).

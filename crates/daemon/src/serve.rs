@@ -162,6 +162,10 @@ async fn handle(mut sock: TcpStream, engine: Arc<Engine>, hub: Arc<Hub>) -> anyh
             Ok(())
         }
         ("GET", "/healthz") => send_json(&mut sock, 200, &json!({"ok": true})).await,
+        ("GET", "/usage") => {
+            let doc = engine.usage_doc().await;
+            send_json(&mut sock, 200, &doc).await
+        }
         ("GET", "/models") => match engine.catalog_models().await {
             Ok(models) => send_json(&mut sock, 200, &json!({"models": models})).await,
             Err(e) => send_json(&mut sock, 502, &json!({"error": e})).await,
@@ -412,6 +416,7 @@ mod tests {
             let body = concat!(
                 "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"served\"}}]}\n\n",
                 "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}\n\n",
                 "data: [DONE]\n\n",
             );
             let models = r#"{"data":[{"id":"mock"},{"id":"mock-mini"}]}"#;
@@ -659,6 +664,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bad.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn usage_ledger_tracks_reported_tokens() {
+        let (_engine, _hub, addr) = harness().await;
+        let client = reqwest::Client::new();
+        let before: serde_json::Value = client
+            .get(format!("http://{addr}/usage"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let _ = client
+            .post(format!("http://{addr}/chat"))
+            .body("use tokens please")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let after: serde_json::Value = client
+            .get(format!("http://{addr}/usage"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            after["turns"],
+            before["turns"].as_u64().unwrap() + 1,
+            "{after}"
+        );
+        assert_eq!(
+            after["reported_input"], 42,
+            "provider-reported input tracked"
+        );
+        assert_eq!(
+            after["reported_output"], 7,
+            "provider-reported output tracked"
+        );
+        assert_eq!(after["estimated_turns"], 0);
+        assert_eq!(after["recent"][0]["model"], "mock");
     }
 
     #[tokio::test]

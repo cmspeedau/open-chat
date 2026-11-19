@@ -180,6 +180,30 @@ fn collect_models(v: &Value, out: &mut Vec<(String, bool)>) {
     }
 }
 
+impl OpenCodeProvider {
+    /// Quota/limits from the gateway (zen request caps, Go rolling/weekly/
+    /// monthly percentages). Surfaced verbatim - the panel renders what
+    /// the gateway reports, nothing invented.
+    pub async fn usage_limits(&self) -> Result<Value, ProviderError> {
+        let resp = self
+            .http
+            .get(format!("{}/api/experimental/usage/limits", self.cfg.base))
+            .header("authorization", format!("Basic {}", self.basic()))
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Api {
+                status: status.as_u16(),
+                body: body.chars().take(300).collect(),
+            });
+        }
+        let doc: Value = resp.json().await?;
+        Ok(doc.get("data").cloned().unwrap_or(Value::Null))
+    }
+}
+
 /// Flatten our message list into the single prompt string generate/text
 /// wants. System frames keep their weight by staying first, verbatim;
 /// transcript/history frames pass through unchanged; only non-system

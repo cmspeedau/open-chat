@@ -13,6 +13,7 @@ mod config;
 mod engine;
 mod opencode;
 mod serve;
+mod usage;
 
 use std::path::PathBuf;
 use std::sync::Arc;

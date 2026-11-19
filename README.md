@@ -396,13 +396,13 @@ Instead of managing native mobile applications, `open-chat` provides a unified h
 
 ## 🗺️ Roadmap & Milestones
 
-The `open-chat` implementation is structured into phased milestones addressing all core architecture layers and OpenChamber fixes:
+The `open-chat` implementation is structured into phased milestones addressing all core architecture layers, host resource governance, and OpenChamber fixes:
 
 ### Phase 1: Core Engine, Memory & Concurrency Foundation
 - [x] **Rust Daemon Scaffolding:** Headless async Tokio core daemon decoupled from any browser or Electron process.
-- [x] **Multi-Agent Host Resource Arbiter:** Concurrency semaphores (`tokio::sync::Semaphore`), serialized build/lint check queue, and automated memory headroom guardrails.
-- [x] **User-Configurable CPU Core Throttling:** Explicit user limit (`max_cpu_cores` via config, CLI, or chat command), OS core affinity pinning (`sched_setaffinity` / `SetProcessAffinityMask`), and compiler thread-cap injection (`CARGO_BUILD_JOBS`, `RAYON_NUM_THREADS`).
-- [x] **OS Process Niceness & Priority Manager:** Automatic scheduling prioritization (`nice` on Linux/macOS, `BELOW_NORMAL_PRIORITY_CLASS` on Windows) to prevent subagents from seizing user desktop interactivity.
+- [x] **Multi-Agent Host Resource Arbiter & CPU Governor:** Concurrency semaphores (`tokio::sync::Semaphore`), serialized build/lint check queue, and automated memory headroom guardrails.
+- [x] **User-Configurable CPU Core Throttling:** Explicit user limit (`max_cpu_cores` via `.openchat/config.toml`, CLI, or chat command), OS core affinity pinning (`sched_setaffinity` on Linux / `SetProcessAffinityMask` on Windows), and compiler thread-cap injection (`CARGO_BUILD_JOBS`, `RAYON_NUM_THREADS`, `UV_THREAD_POOL_COUNT`, `MAKEFLAGS`).
+- [x] **OS Process Niceness & Priority Manager:** Automatic scheduling prioritization (`nice` on Unix/macOS, `BELOW_NORMAL_PRIORITY_CLASS` on Windows) to prevent subagents from seizing user desktop interactivity.
 - [x] **Shared Workspace File Watcher:** Single debounced file change bus replacing multiple uncoordinated file watchers per subagent.
 - [x] **Bounded Memory Ring Buffers:** Zero-copy execution streams with strict circular buffer caps (256KB) preventing process RAM leaks and OOM kills.
 - [x] **Subagent Task Supervisor & Watchdog:** Async channel orchestration with timeout safety nets and automatic wake-up triggers to eliminate subagent hangs.
@@ -428,6 +428,6 @@ The `open-chat` implementation is structured into phased milestones addressing a
 ### Phase 5: Multi-Interface Adapters & Resilient UI
 - [ ] **Resilient SSE Reconnection with Idempotency:** Auto-reconnecting event streams with replay buffers preventing UI hangs on provider timeouts.
 - [ ] **Lightweight Virtualized Web UI:** Collapsed envelope rendering preventing 1.2GB+ DOM overload and input stutter in long sessions.
-- [ ] **Interactive Dynamic Core Throttling Controls:** Web UI slider and bot chat commands (`/cores <n>`, `/set cores <n>`) for real-time adjustments without restarting.
+- [ ] **Interactive Dynamic Core Throttling Controls:** OpenChamber-style header pill / settings slider and bot chat commands (`/cores <n>`, `/set cores <n>`) for real-time CPU throttling adjustments without daemon restart.
 - [x] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
 - [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.

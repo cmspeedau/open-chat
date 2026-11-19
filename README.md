@@ -2,7 +2,7 @@
 
 Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://github.com/openchamber/openchamber).
 
-`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **runtime memory bug diagnostic self-healing**, **subagent deadlock prevention**, **system lockup prevention with user-configurable CPU core throttling**, and a **Context Compositor engine**.
+`open-chat` transitions from an Electron/mobile-heavy model to a **headless, ultra-fast core daemon** supporting first-class multi-interface clients (Telegram, Discord, Web) with **native persistent memory**, **autonomous 50+ skill auto-binding**, **interactive skill gap synthesis**, **surgical diff patching (solving 5× output token bloat)**, **hardcoded Anti-Slop Law compiled into core engine logic**, **runtime memory bug diagnostic self-healing**, **subagent deadlock prevention**, **system lockup prevention with user-configurable CPU core throttling**, and a **Context Compositor engine**.
 
 ---
 
@@ -13,6 +13,54 @@ Next-generation agentic workspace & rewrite inspired by [OpenChamber](https://gi
 
 ---
 
+## ⚖️ Embedded Anti-Slop: Made Into Inviolable Engine Law
+
+In standard agent setups, anti-slop guidelines are treated as optional system prompt advice that LLMs frequently ignore under high context pressure. 
+
+In `open-chat`, **Anti-Slop is hardcoded into the Rust daemon binary as Inviolable Engine Law (`const ANTI_SLOP_LAW`)**. It cannot be overridden by conversational drift, user prompts, or subagent prompts.
+
+### The Four Engine Invariants (The "Anti-Slop Law")
+
+```rust
+// Core Engine Invariant: Embedded at compile-time directly in the Rust binary
+pub const ANTI_SLOP_LAW: &str = r#"
+[INVIOLABLE ENGINE LAW - ZERO-TOLERANCE ANTI-SLOP]
+1. ZERO CONVERSATIONAL FILLER: Never output pleasantries, confirmations ("Sure, I can help!"),
+   pre-action monologues ("I will now check..."), or post-action summaries.
+2. SURGICAL DIFF ONLY: Full-file rewrites are strictly forbidden. Only emit minimal search-and-replace hunks.
+3. SILENT VERIFICATION: Execute compiler and linter checks autonomously. Never ask the user to test what you can test.
+4. CODE OVER EXPLANATION: If code was requested, emit ONLY code diffs and compiler verification.
+"#;
+```
+
+```
+                        LLM Stream Chunk
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│           Rust Core Stream Interceptor & Sanitizer           │
+│                                                              │
+│  1. Pre-Execution Enforcer: Injects Law into system frame #0 │
+│  2. Stream Slop Trimmer: Cuts pleasantries before user sees  │
+│  3. Diff Validator: Rejects full-file rewrite tool calls     │
+│  4. Post-Hoc Slop Penalty: Deducts budget if rules violated  │
+└──────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+            Clean, High-Density, Pure Signal Stream
+```
+
+### 1. Compile-Time Inviolability (`System Frame 0`)
+The `ANTI_SLOP_LAW` is baked directly into the daemon crate via `include_str!`. The Context Compositor injects it into **System Frame 0** above all user prompts and loaded project skills. Even if a model is tempted to be conversational, the engine frames it as an unbypassable execution constraint.
+
+### 2. Stream-Level Slop Stripping (Zero-Latency Engine Filter)
+If a model starts generating conversational fluff (e.g., *"Certainly! Here is the updated code:"*), the streaming response engine buffers the leading 40 tokens through an internal Trie filter. If conversational slop is detected, the daemon **silently drops those tokens from the stream** and only emits the actual tool call or diff block to the client.
+
+### 3. Tool-Level Full-File Rewrite Rejection
+The engine's `file_patch` tool actively rejects attempts to overwrite entire files when a surgical diff would suffice. If an agent tries to rewrite a 400-line file to update 3 lines, the tool returns a `SlopViolationError` forcing the LLM to provide a precise unified diff.
+
+---
+
 ## 🛠️ OpenChamber Shortfalls & The `open-chat` Architectural Fixes
 
 Through real-world development and multi-agent issue analysis in OpenChamber, eleven critical bottlenecks emerge. `open-chat` is architected from the ground up to eliminate every single one:
@@ -20,7 +68,7 @@ Through real-world development and multi-agent issue analysis in OpenChamber, el
 | # | OpenChamber Shortfall | What Goes Wrong | The `open-chat` Fix |
 |---|---|---|---|
 | **1** | **Multi-Agent Host Lockups (PC Freezes)** | Spawning 3+ concurrent agents creates unconstrained child processes, unbounded thread pools, multiple file watchers, and competing compiler checks that saturate 100% CPU/RAM and freeze the OS. | **Multi-Agent Resource Governor & User CPU Core Caps:** Hard concurrency semaphores, user-configured CPU core limits (`max_cpu_cores`), single shared workspace file-watcher, queue-managed build/compiler checks, and OS process priority throttling. |
-| **2** | **5× Output Token Bloat** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Unified Diff Tooling & Strict `[during]` Guardrails:** Only changed lines are emitted; zero conversational fluff or tutorial narration. |
+| **2** | **5× Output Token Bloat & Conversational Slop** | Full-file rewrites and conversational filler cause output tokens to exceed input tokens by 5×, triggering huge API bills and 60s+ latency. | **Anti-Slop Baked into Code as Inviolable Law:** Compiled into Rust binary, stream-level slop trimmer, and surgical search-and-replace tooling. |
 | **3** | **Runtime Memory Bugs (Leaks, SIGKILL & Unbounded Buffers)** | Unbounded agent log buffers, unpruned tool execution history, and lack of system memory awareness trigger runtime OOM panics or process freezes. | **Self-Monitoring Memory Guardrails & Diagnostic Self-Healing:** Hard caps on execution trace buffers, active memory telemetry, and auto-compaction before memory pressure triggers crash events. |
 | **4** | **Subagent Hangs & Deadlocks (Async Desync)** | Orchestrator-subagent runs hang indefinitely after 20–40 tool calls because parent sessions lose track of child SSE events or drop wake-ups. | **Strict Tokio Channel Ack & Timeout Deadlock Detector:** Typed async mpsc channels with heartbeat ping/pong, background task detached supervisors, and fail-safe timeouts. |
 | **5** | **DOM Overload & Multi-Second Input Lag** | Long, tool-rich chats mount 1,000+ DOM nodes unconditionally outside the virtualizer (e.g. streaming tail turns), ballooning renderer RAM to >1.2GB and freezing typing. | **Aggressive Virtualization & Compact Headless JSON Feeds:** True virtualized viewport rendering; turns older than the immediate step render only collapsed summary envelopes. |
@@ -119,7 +167,7 @@ Relying on an LLM's deep latent weights to "remember" idiomatic patterns, securi
 
 ---
 
-## 📉 Fixing the 5× Output Token Crisis: Surgical Diffs & Anti-Slop
+## 📉 Fixing the 5× Output Token Crisis: Surgical Diffs & Anti-Slop Law
 
 In standard agent setups, output tokens run **5× higher than input tokens** because the agent rewrites entire 500-line files to change 5 lines of code, preceded and followed by polite conversational chatter. Because output tokens are **3× to 5× more expensive** and generated sequentially at 30–80 tokens/sec, this ruins latency and balloons cost.
 
@@ -130,16 +178,17 @@ In standard agent setups, output tokens run **5× higher than input tokens** bec
                                    │
                                    ▼
         ┌────────────────────────────────────────────────────────┐
-        │  anti-slop [during] Constraint Injection               │
+        │  Embedded Anti-Slop Law Invariant                      │
         │  • Prohibits: pleasantries, post-code summaries,       │
         │    rewriting unmodified functions, redundant tests.    │
+        │  • Enforced by Rust daemon stream filter.             │
         └────────────────────────────────────────────────────────┘
                                    │
                                    ▼
         ┌────────────────────────────────────────────────────────┐
         │  Surgical Unified Diff / Replace Tooling               │
         │  • Agent emits ONLY: exact search & replace blocks     │
-        │  • Never outputs full file contents                    │
+        │  • Full file rewrites rejected with SlopViolationError │
         └────────────────────────────────────────────────────────┘
                                    │
                                    ▼
@@ -235,7 +284,7 @@ When managing a library of **55+ skills**, manually calling them or dumping them
 ┌───────────────────────────────┐             ┌───────────────────────────────┐
 │ Persistent Auto-Mount         │             │ Skill Gap Detector            │
 │ • Mounts idiomatic skills     │             │ • Prompts user to add/author  │
-│ • Injects 'anti-slop [during]'│             │   new skill for this language │
+│ • Injects Anti-Slop Law       │             │   new skill for this language │
 │ • Emits visual badge          │             │ • Can bootstrap SKILL.md      │
 └───────────────────────────────┘             └───────────────────────────────┘
 ```
@@ -292,9 +341,9 @@ You will never have to wonder if a skill is active. Every turn includes transpar
   "detected_stack": ["rust", "cargo"],
   "active_skills": [
     { "id": "rust-idioms", "mode": "during", "tokens": 420 },
-    { "id": "anti-slop", "subskills": ["antislop-code"], "mode": "during", "tokens": 310 }
+    { "id": "anti-slop-law", "mode": "hardcoded_law", "tokens": 280 }
   ],
-  "total_skill_overhead": "730 tokens",
+  "total_skill_overhead": "700 tokens",
   "output_mode": "surgical_diff",
   "memory_health": "optimal",
   "host_governor": { "active_workers": 3, "cpu_cores_capped": 4, "cpu_throttle": "normal" }
@@ -302,9 +351,9 @@ You will never have to wonder if a skill is active. Every turn includes transpar
 ```
 
 - **Web UI:** A sticky header bar with interactive pills:
-  `🦀 Rust Stack Active • 🛡️ anti-slop [during] • ⚙️ rust-idioms (730 tokens) • ✂️ Diff-Mode • 🟢 Memory Clean • 🖥️ 4 Cores Capped`
+  `🦀 Rust Stack Active • ⚖️ Anti-Slop Law • ⚙️ rust-idioms (420 tokens) • ✂️ Diff-Mode • 🟢 Memory Clean • 🖥️ 4 Cores Capped`
 - **Telegram & Discord:** Clean, compact header tag before replies:
-  `⚡ [Loaded: rust-idioms, anti-slop (during) | Memory: Clean | Governor: 4 Cores Max]`
+  `⚡ [Loaded: rust-idioms, Anti-Slop Law | Memory: Clean | Governor: 4 Cores Max]`
 
 ---
 
@@ -313,15 +362,15 @@ You will never have to wonder if a skill is active. Every turn includes transpar
 Inspired by modern agent compositor architectures, `open-chat` uses a dedicated **Context Compositor** pipeline before any request reaches the model:
 
 ```
-[User Prompt] + [Project Memory] + [Auto-Discovered Skills] + [Active Mode: During]
+[Inviolable Anti-Slop Law] + [User Prompt] + [Project Memory] + [Auto-Discovered Skills]
                                     │
                                     ▼
                      ┌──────────────────────────────┐
                      │     Context Compositor       │
+                     │  - Injects Law into Frame #0 │
                      │  - Deduplicates rules        │
                      │  - Enforces token budgets    │
                      │  - Prunes conflicting advice │
-                     │  - Injects top-window anchors│
                      │  - Restricts diff output     │
                      └──────────────────────────────┘
                                     │
@@ -360,9 +409,10 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Dual-Tier Embedded Memory:** SQLite FTS5 (sparse exact) + `sqlite-vec` (dense semantic) with automatic contradiction resolution and WAL hygiene.
 - [x] **Dynamic Rolling Context Compactor:** Automated pruning of intermediate terminal logs and tool payloads into semantic one-line digests.
 
-### Phase 2: Token Efficiency & Code Generation
-- [x] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool eliminating full-file rewrites and cutting output tokens by ~80%.
-- [x] **Strict Anti-Slop `[during]` Mode Enforcement:** Automatic negative constraint injection to eliminate polite filler, pre-tool monologue, and post-code summaries.
+### Phase 2: Token Efficiency & Anti-Slop Core Engine Law
+- [x] **Compile-Time Anti-Slop Law Invariant:** Hardcoded `const ANTI_SLOP_LAW` embedded in Rust binary, injected into System Frame #0 above all prompt contexts.
+- [x] **Stream Slop Interceptor:** In-flight Trie-based prefix filter that strips conversational pleasantries before reaching the user UI.
+- [x] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool rejecting full-file rewrites with `SlopViolationError`.
 - [x] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
 - [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.
 
@@ -372,7 +422,7 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [ ] **Skill Gap Detector & Synthesizer:** Interactive prompt flow alerting users on uncovered stacks with one-click `skill_bootstrap` authoring.
 
 ### Phase 4: Context Compositor & Observability
-- [ ] **Context Compositor Pipeline:** Pre-flight prompt assembler that deduplicates rules, enforces strict per-turn token budgets, and eliminates conflicting advice.
+- [ ] **Context Compositor Pipeline:** Pre-flight prompt assembler that injects Anti-Slop Law, deduplicates rules, and enforces strict token budgets.
 - [ ] **Real-Time Token, Memory & Governor Badges:** Transparent per-turn telemetry showing active skills, token consumption, memory health status, active worker count, and CPU core cap.
 
 ### Phase 5: Multi-Interface Adapters & Resilient UI

@@ -1,8 +1,8 @@
 # OpenChat / OpenChamber Rewrite — Architecture & Product Ideas
 
-> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, multi-client / directory-scoped synchronization architecture, native REA (Reverse Engineer Anything) clean-room reconstruction capabilities, and an integrated REA toggle & tool installer manager grounded in the `craft-anything` architecture. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
+> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture, Dev Mode workflow, small-model bootstrap/diagnostics engine, multi-client / directory-scoped synchronization architecture, native REA (Reverse Engineer Anything) reconstruction capabilities, and an integrated Clean-Room vs. Deep Mode toggle switch with automated tool installation grounded in the `craft-anything` architecture. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
 >
-> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, enforce strict state-sync invariants across concurrent multi-client sessions, integrate native binary/app reverse-engineering pipelines directly into the developer workflow, and provide seamless, zero-friction toggle switches, Clean Room vs. Deep modes, and automated dependency installers with a unified CLI/desktop `doctor` system.
+> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, keep every automated diagnosis or external action observable and user-controlled, offload operational triage/bootstrap tasks to lightweight local models, enforce strict state-sync invariants across concurrent multi-client sessions, integrate native binary/app reverse-engineering pipelines directly into the developer workflow, and simplify execution via a single primary toggle: **Clean-Room vs. Deep Mode** paired with an automated dependency installer and `doctor` system.
 
 ## Contents
 
@@ -10,7 +10,7 @@
 2. [Lightweight local model bootstrap & onboarding](#2-lightweight-local-model-bootstrap--onboarding)
 3. [Autonomous skill synthesis pipeline](#3-autonomous-skill-synthesis-pipeline)
 4. [Inbuilt REA Subsystem & Craft-Anything Architecture](#4-inbuilt-rea-subsystem--craft-anything-architecture)
-5. [REA Settings Page, Clean Room vs. Deep Mode & Tool Installer](#5-rea-settings-page-clean-room-vs-deep-mode--tool-installer)
+5. [The Clean-Room vs. Deep Mode Toggle & Tool Installer](#5-the-clean-room-vs-deep-mode-toggle--tool-installer)
 6. [Polyglot anti-slop architecture](#6-polyglot-anti-slop-architecture)
 7. [Multi-client sync protocol & state invariants (OpenChamber-grounded)](#7-multi-client-sync-protocol--state-invariants-openchamber-grounded)
 8. [Unified orchestration lifecycle](#8-unified-orchestration-lifecycle)
@@ -25,12 +25,12 @@
 
 ## 1. Executive overview
 
-The proposal combines five complementary architectural pillars: a lightweight zero-cloud onboarding concierge, an inbuilt reverse-engineering analysis subsystem (REA) complete with a modular toggle and tool management page patterned after `craft-anything`, followed by three runtime anti-slop quality controls:
+The proposal combines five complementary architectural pillars: a lightweight zero-cloud onboarding concierge, an inbuilt reverse-engineering analysis subsystem (REA) centered on a simple **Clean-Room vs. Deep Mode** toggle switch and tool installer manager patterned after `craft-anything`, followed by three runtime anti-slop quality controls:
 
 | Layer / Stage | When it acts | Primary responsibility | Reference concept |
 |---|---|---|---|
 | **0. Local Bootstrap Coprocessor & Diagnostic Engine** | First run, workspace open, failure/incident triage | Hardware discovery, credential onboarding, local skill synthesis, log clustering & diagnostic drafting | NousResearch `hermes-agent` (`setup_beat` / local flows) |
-| **0.5 Inbuilt REA Engine & Tool Installer** | Binary inspection, clean-room feature reconstruction, settings management | Decompile binaries, unpack ASAR/Electron, trace network/IPC boundaries, manage external decompiler toolchains via toggle | `morluto/rea` & `storytold/craft-anything` |
+| **0.5 Clean-Room vs. Deep Mode REA Engine & Tool Installer** | Binary inspection, clean-room feature reconstruction, settings management | Single toggle: outward clean-room recreation vs. deep decompilation; manage toolchains via integrated `doctor` | `morluto/rea` & `storytold/craft-anything` |
 | **1. Prompt Skill Injector** | Before generation and after a patch | Select project/language rules, explain the required lifecycle mode, enforce compact search/replace or unified-diff output | `miqdadbadjuber/anti-slop`-style skill and `during` / `after` rules |
 | **2. Logit Backtracking Sampler** | Inside token generation | Detect disallowed phrase continuations and retry from a cached prefix with adjusted probabilities | `sam-paech/antislop-sampler` |
 | **3. Polyglot Tree-Sitter AST Gate** | After patch construction, before file write | Inspect syntax nodes for incomplete or suspicious constructs in supported languages | `skew202/antislop` / tree-sitter-based checks |
@@ -39,7 +39,10 @@ The controls are deliberately layered:
 
 - **The bootstrap and diagnostic coprocessor** runs entirely on a lightweight local model (1B–3B parameters or embedded runtime), eliminating cold-start API dependencies, isolating dirty stack traces from the main context, and saving cloud token quotas during setup, onboarding, and incident triage.
 - **Inbuilt REA capabilities (Craft-Anything style)** allow developers to point OpenChat at any website, desktop app, mobile APK, game, or native binary, study it with real inspection tools, build a new version in the user\'s requested language/stack, and verify the result against the original.
-- **Clean Room vs. Deep Mode & Tool Manager:** Offers a strict dual-mode toggle switch. In **Clean Room** mode, internal proprietary code/files are never read; the builder works strictly from outward observable behavior, UI screenshots, and public contracts. In **Deep Mode**, the full 300+ inspection tool suite (including Ghidra headless, JADX, and AST decoders) is unlocked. Missing dependencies are checked and installed via an integrated `doctor` command and UI manager.
+- **Clean-Room vs. Deep Mode Switch:** Eliminates complex UI toggles in favor of one clear operational switch:
+  - **Clean-Room Mode (Default):** Never reads inside proprietary code, binaries, or private repo files. Works strictly from outward observable behavior, UI screenshots at multiple viewports, public network contracts, and specs.
+  - **Deep Mode (Opt-In):** Unlocks the full 300+ decompiler and disassembler suite (headless Ghidra, JADX, ASAR unpacker, IL2CPP dumper, AST decoders).
+  - Missing dependencies are detected and installed via an integrated `doctor` command and settings UI.
 - **Prompt rules** guide intent and reduce unnecessary output, but remain probabilistic.
 - **A sampler** can suppress selected language patterns only when the inference runtime exposes token-level logits/state; ordinary hosted chat APIs may not support it.
 - **An AST gate** is deterministic over the parsed patch and can block known incomplete constructs, but is not a proof of correctness and should avoid policing ordinary application semantics as if they were universal truths.
@@ -71,7 +74,7 @@ OpenChat adopts an explicit two-tier model separation:
 │  • Local credential & provider setup (Ollama, vLLM, Cloud API keys)    │
 │  • Workspace manifest detection & AST skill synthesis                  │
 │  • Dev Mode diagnostic triage, trace redaction & issue drafting        │
-│  • REA external tool prerequisite scanning & installer coordination   │
+│  • Mode prerequisite scanning & installer coordination (`doctor`)      │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │ Bootstrap Complete / Hand-off
                                     ▼
@@ -84,7 +87,7 @@ OpenChat adopts an explicit two-tier model separation:
 │  • Layer 2: Backtracking Sampler                                       │
 │  • Layer 3: Polyglot Tree-Sitter AST Diff Gate                         │
 │  • Headless Daemon Task Runner & Tool Executor                         │
-│  • Subagent & REA Analysis Orchestrator                                │
+│  • Clean-Room / Deep Mode Subagent Orchestrator                        │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -96,7 +99,7 @@ Modeled after the `setup_beat` pattern in `hermes-agent`, onboarding in OpenChat
 2. **`connectors` beat:** Fingerprints local developer utilities (Git, GitHub CLI `gh`, Docker, Ripgrep, Tree-sitter parsers) and displays interactive cards to enable or link them.
 3. **`credentials` beat:** Securely collects and encrypts model provider keys or local endpoint ports directly into the daemon\'s local store.
 4. **`workspace` beat:** Discovers project manifests (`Cargo.toml`, `pyproject.toml`, `package.json`, `go.mod`) in target folders and seeds project memory.
-5. **`rea_tools` beat (Optional):** Detects if the user wants reverse-engineering capabilities enabled; runs the built-in `doctor` check for Ghidra, JADX, and network sniffers, providing instant install options.
+5. **`mode_setup` beat (Optional):** Prompts user for primary default mode (**Clean-Room** vs. **Deep**); runs `doctor` check for required tools and offers 1-click install.
 6. **`done` beat:** Transitions the session from onboarding mode to the standard interactive coding daemon.
 
 Crucially, cards are UI-agnostic: the daemon emits structured card payloads over WebSocket or IPC, allowing Web, TUI, and desktop frontends to render native pickers and skip controls.
@@ -160,7 +163,7 @@ The synthesized skill is stored in `crates/memory` (via SQLite/sqlite-vec) and i
 
 ### 4.1 Product concept: Study → Build → Check → Ready
 
-Adopting the architectural model established by `storytold/craft-anything` (and enriched by `morluto/rea`), OpenChat implements a full-lifecycle reverse engineering engine that turns black-box software into clean-room, verified implementations:
+Adopting the architectural model established by `storytold/craft-anything` (and enriched by `morluto/rea`), OpenChat implements a full-lifecycle reconstruction engine that turns black-box software into clean-room, verified implementations:
 
 ```text
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
@@ -172,36 +175,12 @@ Adopting the architectural model established by `storytold/craft-anything` (and 
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
-1. **Study:** Inspects the original target using real native inspection tools—layout at multiple breakpoints, API routes, IPC boundaries, decompiled functions, and runtime network calls—recording findings in a tamper-proof evidence ledger (`investigation.cany/`).
+1. **Study:** Inspects the target using tools authorized under the active mode (**Clean-Room** or **Deep**). Gathers layout across breakpoints, API routes, or decompiled symbols, recording findings in a structured evidence ledger (`investigation.cany/`).
 2. **Build:** A coding agent (Claude Code, Grok, Copilot, or local OpenChat executor via ACP/MCP) synthesizes an entirely new project in the stack requested by the user (e.g. Rust, TypeScript, Godot, React).
 3. **Check:** Compares the build against the original target. For websites: responsive DOM and screenshot diffs at 3 viewport widths. For apps/games: execution runs, state machine transitions, and recorded test vectors.
 4. **Ready:** Interactive launch, live preview, or play-test card in the client, with an iterative prompt box for subsequent refinements.
 
-### 4.2 Clean Room vs. Deep Mode: Strict Operational Boundary
-
-Directly following `craft-anything`, OpenChat establishes a fundamental mode switch:
-
-```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                        MODE SELECTION TOGGLE                           │
-│                                                                        │
-│  (•) Clean Room (Default & Recommended)                                │
-│      • Nothing inside the original program or repo is read.            │
-│      • No decompiler, no byte extraction, no proprietary source peek.  │
-│      • Analyzes outward behavior: visual screenshots, responsive DOM,  │
-│        public REST/WebSocket specs, user-provided reference images.    │
-│      • Tools that attempt to decompile or look inside are refused      │
-│        with a prompt instructing how to enable Deep Mode.              │
-│                                                              │
-│  ( ) Deep Mode (Private / Explicit Opt-In)                             │
-│      • Unlocks the entire 300+ tool inspection suite.                  │
-│      • Binary decompilation via native Rust decoders or Ghidra.        │
-│      • Electron .asar unpacking, IL2CPP metadata parsing.              │
-│      • In-depth pseudocode and cross-reference extraction.             │
-└────────────────────────────────────────────────────────────────────────┘
-```
-
-### 4.3 Target Analysis Matrix (`crates/tools::rea`)
+### 4.2 Target Analysis Matrix (`crates/tools::rea`)
 
 Like `craft-anything`\'s 320-tool suite, OpenChat provides dual-mode tool implementations where every tool functions as both a daemon MCP tool and a standalone CLI subcommand:
 
@@ -209,49 +188,58 @@ Like `craft-anything`\'s 320-tool suite, OpenChat provides dual-mode tool implem
    - Playwright/headless Chrome capture at 3 screen widths (desktop 1440px, tablet 768px, mobile 375px).
    - Layout metrics, color palette, typography extraction, and public network call capture.
 2. **Native Binaries (x86_64, AArch64, ARM, RISC-V):**
-   - Headless bridge to Ghidra, Hopper, IDA, or Kuna decompilers.
+   - Headless bridge to Ghidra, Hopper, IDA, or Kuna decompilers (Deep Mode).
    - Built-in pure-Rust parsers (`goblin`, `object`) for ELF sections, PE imports, and Mach-O signatures without external decompiler overhead.
 3. **JavaScript & Electron Applications:**
    - Built-in zero-dependency `.asar` archive unpacker (`crates/tools::rea::asar`).
-   - Source-map reconstructor to recover original TypeScript/JavaScript source trees.
+   - Source-map reconstructor to recover original TypeScript/JavaScript source trees (Deep Mode).
 4. **Managed Runtimes (.NET, JVM, Android):**
    - CIL instruction disassembler and metadata inspector for `.NET` assemblies.
-   - Headless JADX integration for Android APK decompilation and manifest analysis.
+   - Headless JADX integration for Android APK decompilation and manifest analysis (Deep Mode).
    - Unity IL2CPP static metadata extractor (`global-metadata.dat` v24–39).
 5. **Game Runtimes & Recreations:**
    - Extracts assets, sprite sheets, audio clips, and state logic to recreate gameplay in Godot, Bevy, or WebGL.
 
 ---
 
-## 5. REA Settings Page, Clean Room vs. Deep Mode & Tool Installer
+## 5. The Clean-Room vs. Deep Mode Toggle & Tool Installer
 
-### 5.1 Architecture: Built Like `craft-anything`
+Instead of an array of confusing micro-settings, OpenChat consolidates all reverse engineering and reconstruction capabilities into **one primary toggle**: **Clean-Room Mode vs. Deep Mode**, backed by an automated dependency installer and diagnostic `doctor`.
 
-Following `craft-anything` and `craft-anything-cli`, OpenChat integrates tool health checks, package management, and mode selection into a unified system:
+### 5.1 The Primary Mode Toggle
 
-1. **`openchat doctor` CLI & Settings Dashboard:** Inspects local coding agents, tool installations, system runtimes, and engine capabilities.
-2. **One-Click Automated Installers:** Installs missing dependencies (JDK 21, Ghidra, JADX, Wireshark/tshark) via host package managers (`brew`, `apt`, `winget`, `choco`) or managed isolated GitHub binary downloads.
-3. **Structured Project Dossier:** Every reverse-engineered build creates a standardized project folder:
-   - `craft.json`: Request prompt, target URI, mode (`clean-room` | `deep`), status, and history.
-   - `capture/`: Recorded screenshots, HAR network traces, and extracted assets.
-   - `app/`: Generated clean-room source code.
-   - `checks/`: Responsive visual diffs, similarity scores, and test vector results.
-   - `investigation.cany/`: Structured evidence records with confidence and limitations.
-   - `inbox/`: Questions and approval cards waiting for user decision.
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                        PRIMARY MODE TOGGLE                             │
+│                                                                        │
+│  [ (•) Clean Room (Default) ]          [ ( ) Deep Mode (Opt-In) ]      │
+│                                                                        │
+│  • Zero access to private source,       • Full 300+ decompiler &       │
+│    decompilers, or internal bytes.        disassembler tool suite.     │
+│  • Uses only outward observable        • Ghidra Headless, JADX, ASAR   │
+│    behavior: screenshots at 3 screen     unpacking, IL2CPP dumper.     │
+│    widths, DOM, public API specs.      • Pseudocode and symbol trees.  │
+│  • Refuses decompiler tool calls with   • Requires installed runtime   │
+│    an opt-in guidance prompt.            dependencies via `doctor`.    │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-### 5.2 Settings UI Layout
+- **Clean-Room Mode (Default):** Guarantees complete legal and compliance safety. The agent acts like an external observer—it examines rendered UI, takes screenshots across breakpoints, inspects public REST/GraphQL responses, and reads user-provided specifications. Any tool call that attempts to inspect binary bytes, decompile routines, or extract private code is strictly refused.
+- **Deep Mode (Explicit Opt-In):** Activated via the title bar toggle, workspace settings, or `--deep` CLI flag. Unlocks deep binary inspection, Ghidra headless decompilation, JADX APK decompilation, `.asar` unpacking, and low-level AST/symbol extraction for authorized internal reverse engineering and legacy system porting.
+
+### 5.2 Settings UI & Doctor Health Dashboard
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  Settings > Reverse Engineering & Decompilation (REA)                          │
+│  Settings > Engine Mode & Tool Dependencies                                     │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  REA Operating Mode:                                                            │
-│  [ (•) Clean Room (Outward behavior only)   ( ) Deep (Full decompiler suite) ]  │
+│  Active Mode:                                                                   │
+│  [ (•) Clean Room (Safe Outward Recreation)    ( ) Deep Mode (Full Decompiler) ]│
 │                                                                                 │
-│  ── Core Engines & Diagnostic Health (openchat doctor) ──────────────────────── │
+│  ── Tool Status & Diagnostics (openchat doctor) ─────────────────────────────── │
 │                                                                                 │
-│  Pure-Rust Engine (300 built-in tools)                             [ Ready     ]│
+│  Pure-Rust Engine (300 built-in parsers)                           [ Ready     ]│
 │  • Status: Active (ELF, PE, Mach-O, ASAR, HAR, Web)               [ OK ]        │
 │                                                                                 │
 │  Ghidra Decompiler Engine (NSA Ghidra headless)                    [ Installed ]│
@@ -260,26 +248,25 @@ Following `craft-anything` and `craft-anything-cli`, OpenChat integrates tool he
 │                                                                                 │
 │  JADX (Android APK & Dex Decompiler)                              [ Missing   ]│
 │  • Status: Not found in PATH                                      [ Install ⬇ ] │
-│  • Action: Install to ~/.openchat/tools/rea/bin/jadx                            │
+│  • Target: ~/.openchat/tools/rea/bin/jadx                                       │
 │                                                                                 │
 │  Tshark / Wireshark (Network Traffic Inspector)                   [ Installed ]│
 │  • Status: v4.2.4 detected at /usr/bin/tshark                     [ Recheck ]   │
 │                                                                                 │
 │  ── Coding Agent Connections ────────────────────────────────────────────────── │
+│  Claude Code CLI: [ Connected ]     GitHub Copilot CLI: [ Connected ]           │
 │                                                                                 │
-│  Claude Code CLI                                                  [ Connected ]│
-│  GitHub Copilot CLI (via ACP)                                     [ Connected ]│
-│  Grok Build (via ACP)                                             [ Sign in ]   │
-│                                                                                 │
-│  [ Save Settings ]                                [ Run Doctor Diagnostics ]    │
+│  [ Save Preferences ]                             [ Run Doctor Diagnostics ]    │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 5.3 Automated Tool Installer Matrix (`crates/tools::rea::installer`)
 
+When Deep Mode is selected, missing tools can be installed with a single click or CLI command (`openchat doctor --fix`):
+
 | Tool | Mode Required | Detection Probe (`doctor`) | Auto-Install Method | Execution Isolation |
 |---|---|---|---|---|
-| **Pure-Rust Engine** | Clean Room & Deep | Compiled into daemon (`crates/tools`) | Zero-install built-in | Memory safe Rust |
+| **Pure-Rust Engine** | Clean Room & Deep | Compiled into daemon (`crates/tools`) | Zero-install built-in | Memory-safe Rust |
 | **Playwright/Chromium** | Clean Room & Deep | Headless browser probe | Bundled headless binary download | OS sandbox isolation |
 | **OpenJDK 21+** | Deep | `java -version` (regex $\ge 21$) | System PM (`brew`, `apt`, `winget`, `choco`) | System environment |
 | **Ghidra Headless** | Deep | `ghidraRun` or `$GHIDRA_INSTALL_PATH` | Managed download of official GitHub release zip | Headless CLI sandbox |
@@ -288,11 +275,12 @@ Following `craft-anything` and `craft-anything-cli`, OpenChat integrates tool he
 
 ### 5.4 Installation & Doctor Event Flow
 
-When a user triggers an installation or runs `doctor`, events stream over WebSocket/SSE:
+When a user switches modes or runs `openchat doctor`, diagnostic events stream over WebSocket/SSE:
 
 ```json
 {
   "type": "rea:doctor_report",
+  "active_mode": "clean_room",
   "clean_room_ready": true,
   "deep_mode_ready": false,
   "checks": [
@@ -440,12 +428,12 @@ OpenChamber\'s frontend/backend architecture pioneered a sophisticated session s
                │
                ▼
  ┌──────────────────────────────┐
- │ Bootstrap / doctor probe     │  hardware check, engine readiness, clean-room vs deep mode
+ │ Mode Check / doctor probe    │  determine Clean-Room vs Deep; verify tools
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
- │ REA Study Phase              │  320 inspection tools, responsive captures, DOM/disassembly,
- │ (crates/tools::rea)          │  evidence dossier saved to investigation.cany/
+ │ Study Phase                  │  Clean-Room: screenshots, DOM, public contracts
+ │ (crates/tools::rea)          │  Deep: disassembler, symbols, ASAR, decompilation
  └───────────────┬──────────────┘
                  ▼
  ┌──────────────────────────────┐
@@ -474,7 +462,7 @@ OpenChamber\'s frontend/backend architecture pioneered a sophisticated session s
 |---|---|---|
 | **Bootstrap, Sync & Triage** | `crates/session` | Manages `setup_beat`, directory child stores, monotonic sync revisions, and small-model diagnostic offloading. |
 | **Skill Index & Vector Store** | `crates/memory` | Stores synthesized `SKILL.md` contracts and project conventions using `rusqlite` + `sqlite-vec`. |
-| **REA Engine & Tool Installer** | `crates/tools` | Implements the 300+ pure-Rust tools, Ghidra/JADX bridges, ASAR unpacker, and `doctor` installer manager (`crates/tools::rea::installer`). |
+| **Mode & Tool Engine** | `crates/tools` | Implements the 300+ pure-Rust tools, Ghidra/JADX bridges, ASAR unpacker, and `doctor` installer manager (`crates/tools::rea::installer`). |
 | **AST Inspection & Patching** | `crates/core` | Parses search/replace diffs in-memory, executes Tree-sitter queries, manages atomic commits and shadow updates. |
 | **Inference Control** | `crates/governor` | Manages local backtracking sampler, concurrency semaphores, process priority. |
 | **Workspace File Watcher** | `crates/watcher` | Employs debounced `notify` to track file modifications and invalidate AST caches. |
@@ -518,13 +506,13 @@ pub trait AstGate: Send + Sync {
 }
 ```
 
-### 9.2 Craft-Anything Project Schema (`craft.json`)
+### 9.2 Mode-Aware Craft Project Schema (`craft.json`)
 
 ```rust
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProjectMode {
     CleanRoom,
     Deep,
@@ -668,9 +656,9 @@ A local embedded memory system addresses cross-session amnesia without stuffing 
 - Add workspace stack fingerprinting, skill metadata index, `during` / `after` composition, and visible activation events.
 - Implement repository-grounded skill synthesis reading manifests, AST conventions, and local compiler symbols.
 
-### Phase 3 — Inbuilt REA toolchain & Craft-Anything integration
+### Phase 3 — Clean-Room vs. Deep Mode & Craft-Anything integration
 - Implement `crates/tools::rea` with the 4-stage engine: **Study → Build → Check → Ready**.
-- Build the **Clean Room vs. Deep Mode** toggle switch and CLI flags (`--clean-room` / `--deep`).
+- Build the **Clean-Room vs. Deep Mode** toggle switch and CLI flags (`--clean-room` / `--deep`).
 - Implement the `openchat doctor` diagnostic command and automated tool installer manager (`crates/tools::rea::installer`) for Ghidra, JADX, Chromium, and Tshark.
 - Introduce responsive visual diff checks (3 screen widths) and test vector verification.
 
@@ -697,8 +685,8 @@ A local embedded memory system addresses cross-session amnesia without stuffing 
 | Capability | What it can enforce | Important limitation |
 |---|---|---|
 | Bootstrap concierge & Diagnostic coprocessor | Zero-cost setup, hardware sizing, manifest detection, trace clustering & draft issue generation | Limited reasoning capability compared to frontier models; restricted to onboarding beats and structured diagnostic summarization. |
-| REA Subsystem (Clean Room Mode) | Strict prohibition against reading private code or decompiling binaries; strictly uses visible screenshots & public contracts | Cannot reverse internal logic not visible in public UI or wire traffic. |
-| REA Subsystem (Deep Mode) | Ground-truth behavioral evidence from binaries, ASAR, APK, and network traces | Reverse-engineering outputs require clean-room validation; external tools subject to host system package manager limits. |
+| Clean-Room Mode | Strict prohibition against reading private code or decompiling binaries; strictly uses visible screenshots & public contracts | Cannot reverse internal logic not visible in public UI or wire traffic. |
+| Deep Mode | Ground-truth behavioral evidence from binaries, ASAR, APK, and network traces | Reverse-engineering outputs require clean-room validation; external tools subject to host system package manager limits. |
 | Prompt injector | Output format, preferred practices, selected project rules | Model may ignore or misunderstand instructions. |
 | Backtracking sampler | Selected phrase/token continuations in a hook-enabled generator | Requires logits and rewind state; many hosted APIs do not expose these. |
 | AST gate | Syntax-aware detection of configured constructs in changed content | Does not prove semantic correctness, safe behavior, or successful compilation. |
@@ -709,7 +697,7 @@ A local embedded memory system addresses cross-session amnesia without stuffing 
 
 The architecture is grounded in and inspired by these reference projects:
 
-- [`storytold/craft-anything`](https://github.com/storytold/craft-anything) — The foundational pure-Rust engine for reverse-engineering websites, apps, and games. Establishes the 4-step **Study → Build → Check → Ready** lifecycle, the strict **Clean Room vs. Deep Mode** dichotomy, responsive checks at 3 screen widths, and the CLI/desktop `doctor` tool installer architecture.
+- [`storytold/craft-anything`](https://github.com/storytold/craft-anything) — The foundational pure-Rust engine for reverse-engineering websites, apps, and games. Establishes the 4-step **Study → Build → Check → Ready** lifecycle, the strict **Clean-Room vs. Deep Mode** dichotomy, responsive checks at 3 screen widths, and the CLI/desktop `doctor` tool installer architecture.
 - [`morluto/rea`](https://github.com/morluto/rea) — Reverse Engineer Anything: unified agent MCP/tools for native binaries, JavaScript/Electron ASAR, mobile APKs, network traces, and clean-room reconstruction.
 - [`openchamber/openchamber`](https://github.com/openchamber/openchamber) — multi-client sync protocol, directory child stores, session reconciliation invariants (`sync-state-invariants`), and inspiration for the headless rewrite.
 - [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) — two-tier architecture, small model onboarding flow, and `setup_beat` interactive card orchestration.

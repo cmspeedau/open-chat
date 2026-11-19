@@ -1,0 +1,753 @@
+# OpenChat / OpenChamber Rewrite — Architecture & Product Ideas
+
+> **Status:** consolidated design note and implementation proposal. The ideas below combine the supplied OpenChat/OpenChamber notes with the requested three-layer anti-slop architecture and Dev Mode workflow. Names of upstream projects are attribution/reference points, not claims of integration or endorsement.
+>
+> **Design principle:** generate economically, constrain at inference where possible, inspect changed syntax before it reaches disk, and keep every automated diagnosis or external action observable and user-controlled.
+
+## Contents
+
+1. [Executive overview](#1-executive-overview)
+2. [Polyglot anti-slop architecture](#2-polyglot-anti-slop-architecture)
+3. [Unified orchestration lifecycle](#3-unified-orchestration-lifecycle)
+4. [Interfaces and implementation sketches](#4-interfaces-and-implementation-sketches)
+5. [OpenChat Dev Mode](#5-openchat-dev-mode)
+6. [OpenChat / OpenChamber rewrite direction](#6-openchat--openchamber-rewrite-direction)
+7. [Roadmap and integration sequence](#7-roadmap-and-integration-sequence)
+8. [Safety, failure modes, and design decisions](#8-safety-failure-modes-and-design-decisions)
+9. [References and provenance](#9-references-and-provenance)
+
+---
+
+## 1. Executive overview
+
+The proposal combines three complementary controls rather than asking one detector to solve every kind of generated-code quality problem:
+
+| Layer | When it acts | Primary responsibility | Reference concept |
+|---|---|---|---|
+| **1. Prompt Skill Injector** | Before generation and after a patch | Select project/language rules, explain the required lifecycle mode, enforce compact search/replace or unified-diff output | `miqdadbadjuber/anti-slop`-style skill and `during` / `after` rules |
+| **2. Logit Backtracking Sampler** | Inside token generation | Detect disallowed phrase continuations and retry from a cached prefix with adjusted probabilities | `sam-paech/antislop-sampler` |
+| **3. Polyglot Tree-Sitter AST Gate** | After patch construction, before file write | Inspect syntax nodes for incomplete or suspicious constructs in supported languages | `skew202/antislop` / tree-sitter-based checks |
+
+The controls are deliberately layered:
+
+- **Prompt rules** guide intent and reduce unnecessary output, but remain probabilistic.
+- **A sampler** can suppress selected language patterns only when the inference runtime exposes token-level logits/state; ordinary hosted chat APIs may not support it.
+- **An AST gate** is deterministic over the parsed patch and can block known incomplete constructs, but is not a proof of correctness and should avoid policing ordinary application semantics as if they were universal truths.
+- **Patch application** is transactional: validate paths and base versions, apply only the requested change, run syntax/hygiene checks, then commit to the workspace or return a structured rejection for repair.
+
+The larger product concept is a **headless OpenChat daemon** with observable skill composition, persistent scoped memory, multi-client interfaces, resource governance, and a user-confirmed **Dev Mode** that turns diagnostic events into reviewable GitHub issue drafts.
+
+---
+
+## 2. Polyglot anti-slop architecture
+
+### 2.1 Goals and non-goals
+
+**Goals**
+
+1. Reduce generic, hedged, placeholder-filled, or incomplete output.
+2. Catch implementation gaps in the *proposed diff* before patching files.
+3. Keep patches small, attributable, reviewable, and reversible.
+4. Work across Python, TypeScript/JavaScript, Go, and Rust first, with a language adapter boundary for future grammars.
+5. Keep latency low enough for an interactive coding loop. A sub-5 ms AST inspection budget for small changed files is a **target**, not a universal guarantee; parsing cost scales with changed-file size, grammar, runtime, and host hardware.
+
+**Non-goals**
+
+- Replacing the compiler, type checker, tests, security review, or human review.
+- Treating every phrase in a configurable “slop list” as objectively bad.
+- Rewriting whole files when a compact contextual patch is sufficient.
+- Silently correcting or discarding user code when a check fails.
+
+### 2.2 Layer 1 — Prompt Skill Injector
+
+#### Responsibilities
+
+The injector owns **stack detection, skill selection, and lifecycle policy**. It should not load every rule in a catalog into every request.
+
+1. **Detect stack and active targets.** Fingerprint workspace manifests and file extensions (e.g. `pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`); inspect the current task and candidate file paths. File/task signals take precedence over a project-wide language list when choosing narrow rules.
+2. **Resolve skills.** Match indexed skill metadata to language, framework, file glob, task intent, and project-persisted mode. Fall back to semantic skill search only when deterministic matching is insufficient.
+3. **Compose a compact prompt.** Inject only relevant constraints, with an explicit mode such as `during` (guide generation) or `after` (audit/verification). Include token-footprint telemetry and an observable activation event.
+4. **Constrain output.** Request a strict patch representation (search/replace blocks or unified diff), exact target paths, and no unchanged-file restatement. Set limits for changed files/lines where appropriate.
+5. **After-generation audit.** Use a separate audit instruction to inspect the proposed change for policy omissions, incomplete implementation, scope creep, and test/verification gaps. The audit contributes findings; the deterministic AST gate remains the actual patch gate.
+
+#### Skill manifest sketch
+
+```yaml
+---
+id: anti-slop-code
+name: Anti-slop code generation and review
+version: 1
+triggers:
+  languages: [python, typescript, javascript, go, rust]
+  file_patterns: ["*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.go", "*.rs"]
+modes:
+  during:
+    autoload: true
+    rules:
+      - Return only a compact patch in the requested format.
+      - Implement the requested behavior; do not leave placeholders or dummy branches.
+      - Prefer project conventions and existing APIs over invented abstractions.
+  after:
+    autoload: true
+    rules:
+      - Audit changed code for incomplete work and unsupported assumptions.
+      - Report tests/checks run and their result; do not claim checks not executed.
+---
+```
+
+The injector should make loaded rules visible, for example:
+
+```json
+{
+  "type": "agent:skills_composed",
+  "turn_id": "turn_…",
+  "detected_stack": ["python", "typescript"],
+  "active": [
+    {"id": "anti-slop-code", "mode": "during", "tokens": 360},
+    {"id": "python-project-rules", "mode": "during", "tokens": 210}
+  ],
+  "patch_mode": "search_replace",
+  "estimated_context_tokens": 570
+}
+```
+
+#### Compact patch contract
+
+Prefer a typed patch envelope rather than relying on free-form “find and replace” text:
+
+```json
+{
+  "format": "search_replace_v1",
+  "changes": [
+    {
+      "path": "src/example.py",
+      "old": "def answer():\n    return None\n",
+      "new": "def answer():\n    return compute_answer()\n"
+    }
+  ]
+}
+```
+
+Rules for safe application:
+
+- Require exact old-text match and exactly one match by default; ambiguity is a rejection, not a guess.
+- Bind each operation to the file hash/revision seen by the model. Reject stale patches and ask for regeneration/rebase.
+- Permit an explicit unified-diff mode for multi-hunk edits; parse and validate it before touching disk.
+- Apply all files atomically where possible, or stage to temporary files and roll back the set on any error.
+- Keep the diff as the source of truth for AST checks and Dev Mode provenance.
+
+### 2.3 Layer 2 — Logit Backtracking Sampler
+
+#### Why backtracking rather than token-wide bias
+
+A phrase may span multiple tokenizer pieces. Penalizing the first token of a phrase can suppress many valid continuations. The sampler instead waits until a banned phrase/pattern is recognized in the generated text, identifies the earliest token boundary that enabled it, restores a cached prefix, adjusts the probabilities of the offending continuation, and samples again.
+
+#### Proposed operation
+
+1. Keep a bounded generation history of token IDs, decoded text spans, and the probability/logit state needed to resume.
+2. Match configured phrases with a trie/Aho–Corasick-style matcher, or use bounded regex matching where the runtime supports safe rewind.
+3. On a match, map character offsets back to token spans.
+4. Rewind to the match start (or the earliest relevant cached token boundary).
+5. Down-weight or ban the specific continuation, not every token sharing a prefix.
+6. Resample, with a maximum retry/rewind budget to avoid loops.
+7. Record a structured event for observability, avoiding storage of private prompt content unless explicitly enabled.
+
+Config should support severity levels and user/project lists. Phrase controls may cover clichés, unnecessary hedging, and known filler; avoid overbroad rules that damage legitimate wording. The upstream sampler materials describe probability adjustment strengths, phrase lists, cached-state backtracking, optional regex bans, and the limitations of most hosted commercial APIs. Regex bans may require non-streaming generation because the match extent is not known in advance.
+
+#### Runtime compatibility
+
+- **Local runtimes:** integrate where raw logits/probabilities, token-by-token continuation, and sampler state are exposed (e.g. a compatible Transformers-based serving loop or an inference engine with equivalent hooks).
+- **Compatible server/runtime:** an OpenAI-compatible façade can sit in front of an instrumented local model, but the façade alone does not create access to logits.
+- **Cloud API without logits/hooks:** do not claim true sampler enforcement. Use prompt constraints, output screening, and patch/AST gates; expose sampler status as `unavailable` rather than implying it ran.
+- **Streaming:** phrase matching may be streamable with bounded phrase windows; unrestricted regex rewind can conflict with already delivered tokens. The design should either buffer until safe-to-commit points or disable rewind-dependent matching in streaming mode.
+
+#### Sampler pseudocode
+
+```text
+while not stop:
+    logits = model.next_logits(state)
+    token = sample(filter(logits, retry_constraints))
+    state.append(token)
+    matcher.feed(decode(token))
+
+    if matcher.found_forbidden_span():
+        rewind_to(matcher.earliest_token_boundary())
+        lower_probability(offending_continuation, configured_strength)
+        retries += 1
+        if retries > max_retries:
+            stop_with_sampler_limit_or_fallback()
+    else:
+        emit_only_committed_prefix()
+```
+
+A production implementation must preserve enough state to reproduce the prefix deterministically (or explicitly tolerate resampling differences), handle tokenizer boundary mapping, cap cache memory, and make the fallback policy explicit.
+
+### 2.4 Layer 3 — Polyglot Tree-Sitter AST Gate
+
+The AST gate is a **pre-patch quality barrier** over changed syntax. It should parse only changed files/hunks when practical, while retaining enough surrounding context to identify enclosing statements/functions. A first release targets Python, TypeScript, JavaScript, Go, and Rust.
+
+#### Candidate checks
+
+| Language | Examples of suspicious constructs | Notes |
+|---|---|---|
+| Python | `pass` in a newly added function/branch, `...` ellipsis placeholder, `NotImplementedError`, obvious dummy literal returns | `pass` may be valid in marker classes, exceptions, or intentional no-op hooks; use context/profile rules. |
+| TypeScript / JavaScript | empty `catch {}`, empty function bodies, `return null` / fixed mock values in production paths, `throw new Error("TODO")` | Empty callbacks and intentional adapters are possible; severity depends on context. |
+| Go | empty function bodies, `panic("TODO")`, hard-coded mock return values, TODO/FIXME markers | Empty methods may satisfy interfaces intentionally; inspect declaration and comments. |
+| Rust | `todo!()`, `unimplemented!()`, `panic!("TODO")`, placeholder `Default::default()` / constant dummy data | `todo!()` and `unimplemented!()` are strong blockers in production patch paths; tests/examples may be allowed by policy. |
+
+Also scan comments and strings for TODO/FIXME/HACK/XXX, deferrals (“for now”, “temporary”), and hedging (“should work”, “hopefully”) as a separate textual rule family. AST parsing is used for syntax/context; regex/text scans are useful for comments. Keep these findings distinct so suppression and tuning can be precise.
+
+#### Gate policy
+
+Each finding should include path, range, rule ID, severity, message, and an evidence excerpt. Suggested policy:
+
+- **Block:** explicit unresolved stubs in changed production code (`todo!()`, `unimplemented!()`, clear generated placeholder exceptions, disallowed empty implementation bodies).
+- **Warn / require justification:** dummy dictionaries/objects, fixed mock returns, suspicious `pass`, empty catches, generic fallback branches.
+- **Inform:** TODO/hedging/deferment in comments or tests, depending on profile.
+- **Allow by configuration:** test fixtures, generated files, migrations, examples, explicit allowlist/inline suppression with reason.
+
+Avoid “zero false positives” as a blanket guarantee. Optimize for high signal, measured per rule and project profile.
+
+#### Performance and reliability
+
+- Parse the candidate post-patch content in memory; do not write first and scan after.
+- Reuse tree-sitter parsers and compiled query sets across files.
+- Skip unchanged files and use hunk-aware rescans only if the parser can still supply enclosing-node context; otherwise parse the full changed file.
+- Cache by content hash, grammar version, and rule-set version.
+- Fail closed only on explicit security/safety policy; syntax parse errors or missing grammar should return a visible “unable to validate” status and block patch application under strict mode.
+- Report timings by language/file size. Treat the cited per-language millisecond figures as upstream benchmark context, not a guaranteed OpenChat SLA.
+
+---
+
+## 3. Unified orchestration lifecycle
+
+### 3.1 End-to-end flow
+
+```text
+ User request + workspace context
+               │
+               ▼
+ ┌──────────────────────────────┐
+ │ Stack detector / skill index │  manifests, changed paths, intent
+ └───────────────┬──────────────┘
+                 ▼
+ ┌──────────────────────────────┐
+ │ Context compositor           │  scoped memory + skills + token budget
+ │ emits visible activation     │  during-mode rules + patch contract
+ └───────────────┬──────────────┘
+                 ▼
+ ┌──────────────────────────────┐
+ │ Model generation             │── local sampler hook available?
+ │ compact patch only           │       ├─ yes: backtracking sampler
+ └───────────────┬──────────────┘       └─ no: report unavailable; rely on rules
+                 ▼
+ ┌──────────────────────────────┐
+ │ Parse patch / validate base  │  path allowlist, hashes, exact-match rules
+ └───────────────┬──────────────┘
+                 ▼
+ ┌──────────────────────────────┐
+ │ In-memory patch staging      │  no workspace mutation yet
+ └───────────────┬──────────────┘
+                 ▼
+ ┌──────────────────────────────┐
+ │ Tree-sitter AST + hygiene    │  changed Python/TS/JS/Go/Rust only
+ │ gate                         │  findings carry location + rule ID
+ └───────────┬──────────────────┘
+             │ clean / warnings                 │ blocking finding
+             ▼                                   ▼
+ ┌──────────────────────────────┐       ┌──────────────────────────┐
+ │ Apply atomically / commit    │       │ Repair loop              │
+ │ run configured checks       │       │ structured findings to LLM│
+ └───────────────┬──────────────┘       └────────────┬─────────────┘
+                 ▼                                    └── bounded retry
+ ┌──────────────────────────────┐
+ │ After-mode audit + summary   │  state exactly what ran/failed
+ │ emit diagnostic events       │
+ └───────────────┬──────────────┘
+                 ▼
+       Optional Dev Mode triage
+       (draft only; user confirms)
+```
+
+### 3.2 State machine
+
+```text
+CREATED → CONTEXT_COMPOSED → GENERATING → PATCH_PARSED → STAGED
+      → AST_CHECKING → {REJECTED → REPAIRING → PATCH_PARSED, VERIFIED}
+      → APPLYING → POST_CHECKS → COMPLETED
+
+Any stage may transition to FAILED, CANCELLED, or NEEDS_USER_INPUT.
+No rejected patch is applied. No external issue is created without confirmation.
+```
+
+### 3.3 Structured events
+
+A shared event envelope can power Web, CLI, Telegram, and Discord clients:
+
+```ts
+interface AgentEvent<T = unknown> {
+  eventId: string;
+  sessionId: string;
+  turnId: string;
+  occurredAt: string;
+  type: string;
+  severity?: "debug" | "info" | "warning" | "error";
+  payload: T;
+}
+
+interface GateFinding {
+  ruleId: string;
+  severity: "block" | "warning" | "info";
+  path: string;
+  startLine: number;
+  startColumn: number;
+  endLine?: number;
+  message: string;
+  evidence?: string; // redact or truncate before persistence/telemetry
+  confidence?: number;
+}
+```
+
+Example rejection event:
+
+```json
+{
+  "type": "code:patch_rejected",
+  "severity": "warning",
+  "payload": {
+    "path": "src/lib.rs",
+    "findings": [{
+      "ruleId": "rust.todo_macro",
+      "severity": "block",
+      "startLine": 42,
+      "startColumn": 5,
+      "message": "New production code contains todo!(); implement or explicitly allow this stub."
+    }],
+    "retryAllowed": true
+  }
+}
+```
+
+### 3.4 Python orchestration sketch
+
+This is a reference algorithm, not a drop-in package; `parse_patch`, `apply_to_snapshot`, and the Tree-sitter adapter are intentional interfaces to implement against chosen libraries.
+
+```python
+from dataclasses import dataclass
+from typing import Protocol, Sequence
+
+@dataclass(frozen=True)
+class Finding:
+    rule_id: str
+    severity: str
+    path: str
+    line: int
+    column: int
+    message: str
+
+@dataclass
+class StagedFile:
+    path: str
+    base_hash: str
+    original: bytes
+    proposed: bytes
+
+class AstGate(Protocol):
+    def inspect(self, path: str, source: bytes) -> Sequence[Finding]: ...
+
+class PatchStore(Protocol):
+    def read_snapshot(self, path: str) -> tuple[bytes, str]: ...
+    def commit_atomically(self, files: Sequence[StagedFile]) -> None: ...
+
+async def validate_and_apply(patch, store: PatchStore, gate: AstGate, checks):
+    staged: list[StagedFile] = []
+    findings: list[Finding] = []
+
+    # Parse and validate the complete patch before touching disk.
+    for change in parse_patch(patch):
+        original, current_hash = store.read_snapshot(change.path)
+        if current_hash != change.base_hash:
+            raise StalePatch(change.path)
+        proposed = apply_to_snapshot(original, change)
+        staged.append(StagedFile(change.path, current_hash, original, proposed))
+
+    # Inspect changed content in memory; block on configured blocker rules.
+    for item in staged:
+        findings.extend(gate.inspect(item.path, item.proposed))
+    if any(f.severity == "block" for f in findings):
+        return {"status": "rejected", "findings": findings}
+
+    # Stage/commit atomically with re-check of file hashes at commit time.
+    store.commit_atomically(staged)
+    results = await checks.run_for([item.path for item in staged])
+    return {"status": "applied", "findings": findings, "checks": results}
+```
+
+A bounded repair loop can send only changed hunks and gate findings back to the model. Cap attempts (for example, one or two automated repairs), then present findings to the user; never let the agent loop indefinitely.
+
+### 3.5 TypeScript composition and diff-merger sketch
+
+The TypeScript layer can orchestrate a native Tree-sitter/Rust service or a WASM parser package. Keep the gate API stable and return structured data regardless of implementation language.
+
+```ts
+export type Severity = "block" | "warning" | "info";
+
+export interface PatchChange {
+  path: string;
+  baseHash: string;
+  oldText: string;
+  newText: string;
+}
+
+export interface GateFinding {
+  ruleId: string;
+  severity: Severity;
+  path: string;
+  line: number;
+  column: number;
+  message: string;
+}
+
+export interface AstGate {
+  inspect(path: string, source: string): Promise<GateFinding[]>;
+}
+
+export interface Workspace {
+  read(path: string): Promise<{ text: string; hash: string }>;
+  commitAtomically(files: Array<{ path: string; expectedHash: string; text: string }>): Promise<void>;
+}
+
+export async function validatePatch(
+  changes: PatchChange[], workspace: Workspace, gate: AstGate,
+): Promise<{ ok: boolean; findings: GateFinding[] }> {
+  const staged: Array<{ path: string; expectedHash: string; text: string }> = [];
+  const findings: GateFinding[] = [];
+
+  for (const change of changes) {
+    const snapshot = await workspace.read(change.path);
+    if (snapshot.hash !== change.baseHash) throw new Error(`stale patch: ${change.path}`);
+    const occurrences = countExact(snapshot.text, change.oldText);
+    if (occurrences !== 1) throw new Error(`expected one exact match in ${change.path}; found ${occurrences}`);
+    const proposed = snapshot.text.replace(change.oldText, change.newText);
+    staged.push({ path: change.path, expectedHash: snapshot.hash, text: proposed });
+  }
+
+  for (const file of staged) findings.push(...await gate.inspect(file.path, file.text));
+  if (findings.some(f => f.severity === "block")) return { ok: false, findings };
+
+  await workspace.commitAtomically(staged);
+  return { ok: true, findings };
+}
+```
+
+**Diff merger policy:** group non-overlapping edits per file; validate all `baseHash` values before staging; detect overlapping hunks and duplicate match ambiguity; preserve line endings/encoding where possible; do not merge conflicting agent patches automatically. For concurrent agents, use optimistic locking and ask the orchestrator to rebase/retry on conflict. A clean diff is a deliberate interface contract and cost-control strategy, not a substitute for tests.
+
+---
+
+## 5. OpenChat Dev Mode
+
+### 5.1 Product concept
+
+**Dev Mode** is an opt-in, self-monitoring diagnostic assistant within OpenChat. It observes operational failures, assembles a privacy-aware technical incident record, asks an AI to analyze likely causes, then prepares a **draft GitHub issue** for explicit user review. It is not an autonomous bug reporter and should never publish private logs or create an issue by default.
+
+### 5.2 Diagnostic sources and collection
+
+Initial signals:
+
+- **AST gate rejections:** rule ID, language, changed path (possibly path-redacted), source range, severity, retry outcome.
+- **Tool-call failures:** tool name/category, sanitized arguments summary, exit/error class, duration, retry count.
+- **Streaming/parser crashes:** parser stage, event sequence number, exception class, bounded stack trace, provider/transport metadata.
+- **Agent lifecycle failures:** timeouts, missing acknowledgements, subagent heartbeat expiration, cancellation cause.
+- **Post-check failures:** command category and exit code; captured stderr must be bounded and subject to redaction.
+
+Each event should be normalized into a versioned schema and stored in a bounded local ring buffer. Use redaction before persistence where feasible; provide user controls for retention, deletion, and whether diagnostics are enabled. Avoid collecting prompt contents, secrets, environment values, complete source files, or unrestricted command output by default.
+
+```ts
+interface DiagnosticEvent {
+  schemaVersion: 1;
+  diagnosticId: string;
+  sessionId?: string;
+  timestamp: string;
+  category: "ast_gate" | "tool_failure" | "stream_parse" | "agent_lifecycle" | "post_check";
+  component: string;
+  failureCode: string;
+  summary: string;
+  sanitizedDetails: Record<string, unknown>;
+  occurrenceCount: number;
+  privacy: {
+    pathsRedacted: boolean;
+    contentIncluded: boolean;
+    userApprovedExport: boolean;
+  };
+}
+```
+
+### 5.3 Root-cause analysis and issue draft generation
+
+The diagnostic analyzer receives a **curated, bounded incident bundle**, not unrestricted access to local files. It should:
+
+1. Cluster repeated events by normalized signature and identify first/last occurrence.
+2. Distinguish confirmed facts, hypotheses, and missing evidence.
+3. Correlate component versions, event ordering, and retry outcomes without inventing details.
+4. Suggest a minimal reproduction and classify severity/impact, clearly marking estimates.
+5. Produce an issue draft with a title, environment fields only if explicitly available, observed/expected behavior, sanitized logs, and actionable reproduction steps.
+6. Include an evidence manifest so the user can see exactly what data is proposed for export.
+
+The LLM output remains a **draft**. It must not select an arbitrary repository, infer a GitHub owner/repo, or include unsanitized data. The issue target must be selected by the user or resolved from an explicit workspace-to-repository configuration that is shown in the confirmation UI.
+
+### 5.4 User-confirmation card and workflow
+
+Example Web UI card:
+
+```text
+┌────────────────────────────────────────────────────────────────┐
+│ Dev Mode found a recurring tool failure                        │
+│ Signature: stream.parse.unexpected_eof  •  4 occurrences        │
+│ Likely area: streaming response parser (hypothesis)              │
+│                                                                │
+│ Proposed issue: “Streaming parser fails on truncated event”     │
+│ Target: owner/repository (choose or confirm)                     │
+│ Included: error class, timestamps, redacted 12-line trace        │
+│ Excluded: prompts, source content, tokens, environment variables  │
+│                                                                │
+│ [Review draft] [Edit] [Create GitHub issue] [Dismiss]            │
+└────────────────────────────────────────────────────────────────┘
+```
+
+Confirmation requirements:
+
+- Opening the card, generating a draft, and publishing are separate steps.
+- “Create” is a deliberate, explicit action; no pre-checked confirmation and no background auto-submit.
+- Show target repository, title/body, labels, assignees, and every attachment/export field before dispatch.
+- Allow redaction, editing, copying without publishing, and discard.
+- If the draft includes any source excerpt or user content, call it out and require explicit inclusion.
+- Save no GitHub token in the issue body or diagnostic bundle. Use the configured GitHub credential path with least privilege.
+
+### 5.5 GitHub Issue Dispatcher
+
+The dispatcher may use the GitHub API directly or a GitHub MCP/connected-service adapter. It should expose a narrow operation such as `createIssue`, not a general-purpose “act on repository” capability.
+
+```ts
+interface IssueDraft {
+  repository: { owner: string; name: string };
+  title: string;
+  body: string;
+  labels: string[];
+  evidence: Array<{ id: string; description: string; included: boolean }>;
+  draftId: string;
+  revision: number;
+}
+
+interface UserApproval {
+  approved: true;
+  draftId: string;
+  revision: number; // prevents dispatch of an edited-after-approval draft
+  approvedAt: string;
+  repository: string;
+}
+
+interface GitHubIssueDispatcher {
+  createIssue(draft: IssueDraft, approval: UserApproval): Promise<{ url: string; number: number }>;
+}
+```
+
+Guardrails:
+
+- Require explicit user authorization for the specific repository and exact draft revision.
+- Validate repository access and issue-creation scope; do not request broader permissions than necessary.
+- Protect against duplicate dispatch with an idempotency key derived from the approved draft ID/revision.
+- Re-check that the draft has not changed since the user approved it.
+- Present API errors as actionable UI states; never report success until GitHub returns a confirmed issue URL/number.
+- If MCP is selected, keep approval gating in OpenChat and pass only the approved payload to the connector.
+- Respect repository policy and rate limits; provide “copy draft” fallback if dispatch is unavailable.
+
+### 5.6 Example user interaction
+
+1. A generated patch contains `todo!()` in new Rust production code. The AST gate blocks it and requests a bounded repair. The user chooses to dismiss the suggestion and implement it manually.
+2. Separately, three tool invocations fail with the same sanitized stream parser exception. Dev Mode groups them and shows “Review diagnostic.”
+3. The user opens the card. OpenChat’s analysis summarizes the evidence and labels its root-cause guess as a hypothesis.
+4. The user reviews a draft, removes a path and a stack-trace line, selects the configured repository, and edits reproduction steps.
+5. The user presses **Create GitHub issue**. OpenChat records approval for that exact draft revision and calls the dispatcher once.
+6. The UI shows the returned issue URL. If the API call fails, it retains the draft and presents a retry/copy option; it does not claim that an issue was created.
+
+### 5.7 Dev Mode event lifecycle
+
+```text
+runtime event → normalize → redact → bounded local store → deduplicate/cluster
+      → user-visible diagnosis card → AI analysis + draft → review/edit
+      → explicit approval → GitHub API/MCP → confirmed URL or recoverable error
+```
+
+---
+
+## 6. OpenChat / OpenChamber rewrite direction
+
+### 6.1 Core product shape
+
+OpenChat is conceived as a next-generation agentic workspace and rewrite inspired by OpenChamber, emphasizing a **headless, fast core daemon** rather than a UI-bound agent process. A single execution core can serve lightweight clients:
+
+- Web workspace for interactive coding and inspection.
+- Telegram and Discord bridges for notifications, approvals, and remote sessions.
+- CLI/API for automation and local integrations.
+- A persistent daemon that continues work when a browser tab closes.
+
+The engine/client separation is architectural: clients present state and collect consent; the daemon owns sessions, tools, memory, policy, event streams, and task supervision.
+
+### 6.2 Native scoped memory
+
+A local embedded memory system addresses cross-session amnesia without stuffing every past conversation into the prompt:
+
+- **Global user memory** (e.g. `~/.openchat/memory.sqlite`): stable preferences and defaults.
+- **Project memory** (e.g. `.openchat/memory.sqlite`): stack, test commands, architectural decisions, conventions, and project skill bindings.
+- **Session working memory** (RAM/WAL or bounded persisted scratch state): task checkpoints, short-lived traces, and active plan state.
+- **Sparse retrieval:** SQLite FTS5 for exact names, commands, symbols, and keywords.
+- **Dense retrieval:** an embedded vector extension such as `sqlite-vec` or a local alternative for semantic recall.
+- **Hybrid ranking:** merge sparse and dense results (e.g. reciprocal rank fusion), then select a small, explicit token budget per turn.
+- **Consolidation:** asynchronous end-of-turn/idle reflection, contradiction resolution, and replacement of superseded conventions rather than endless duplication.
+
+Suggested tools:
+
+```ts
+memory_store({ scope, category, key, value, source? })
+memory_recall({ scope, query, tokenBudget? })
+memory_forget({ scope, key })
+```
+
+Memory should be inspectable, editable, scoped, and deletable. Retrieval must report which memories were injected and their token cost.
+
+### 6.3 Observable skill system and auto-binding
+
+Skills should be modular, indexed, and loaded only when relevant. A registry can match `SKILL.md` metadata against language, manifest file, glob, framework, task intent, and lifecycle mode. It should support:
+
+- `during` rules to guide a task, and `after` rules to audit or verify it.
+- Persistent project-level activation such as “use anti-slop during this project.”
+- Subskills (e.g. UI, code, copywriting) chosen based on changed files.
+- On-demand `load_skill` calls and explicit `agent:skill_activated` / `agent:skills_composed` events.
+- Visible badges across clients, including active skill names, modes, and token footprints.
+- Skill-gap prompting when a detected language/framework has no matching skill; bootstrap/import only after user consent.
+
+### 6.4 Context compositor and output discipline
+
+Before model invocation, a deterministic compositor combines:
+
+```text
+request + scoped memory + selected skill rules + tool schemas + relevant history
+        → token-budgeted prompt with attribution and active-mode metadata
+```
+
+It should expose per-turn token counts for user/context, tools, memories, and skills. To reduce output cost and latency, code edits default to compact exact patches, not full-file rewrites or conversational narration. Any efficiency claims (e.g. token or latency reductions) should be measured in the product; illustrative figures in earlier design notes are hypotheses/targets, not guaranteed results.
+
+### 6.5 Reliability and resource governance
+
+The supplied rewrite notes also point to reliability features that complement anti-slop and Dev Mode:
+
+- **Bounded log buffers:** circular buffers and output truncation with an explicit “more available” mechanism.
+- **Memory pressure awareness:** shed nonessential caches and pause new workers before host memory is exhausted; avoid destructive cleanup.
+- **Multi-agent governor:** global concurrency semaphore, a shared/debounced workspace watcher, queued/serialized heavy compiler checks, process priority controls, and configurable CPU/memory limits.
+- **Subagent supervision:** typed async message channels, acknowledgements, heartbeats, timeouts, and a watchdog that reports graceful failure instead of hanging forever.
+- **Resilient event streams:** reconnect/backoff, replay buffers, idempotency keys, and explicit stalled/retrying/failed states.
+- **Long-session UI efficiency:** virtualized messages and compact summaries for old turns; expand raw tool payloads only on request.
+- **Autonomous verification:** run the project’s configured formatter/linter/type checker/tests when policy allows, and report exactly what ran.
+
+These features should be centrally orchestrated by the daemon so multiple clients and subagents do not each create their own watchers, compiler storms, or unbounded histories.
+
+---
+
+## 7. Roadmap and integration sequence
+
+### Phase 0 — Contracts and measurement
+
+- Define patch envelope, event schemas, diagnostic privacy policy, workspace-root/path policy, and per-project configuration.
+- Establish test fixtures for placeholder/stub examples and intentional exceptions.
+- Benchmark parser and sampler overhead on supported languages and model runtimes; publish p50/p95 by file size and mode.
+
+### Phase 1 — Safe patch pipeline
+
+- Implement exact-match and unified-diff parsing, base-hash validation, atomic staging/rollback, and rejection UX.
+- Add Tree-sitter adapters for Python, TypeScript/JavaScript, Go, and Rust.
+- Start with high-confidence blockers (`todo!()`, `unimplemented!()`, obvious placeholder exceptions) and configurable warning rules.
+- Add unit, fuzz, malformed-patch, stale-file, and multi-file rollback tests.
+
+### Phase 2 — Skill injection and observability
+
+- Add workspace stack fingerprinting, skill metadata index, `during` / `after` composition, skill-gap prompt, and visible activation events.
+- Integrate compact patch generation and bounded repair retries.
+- Add context/token inspector and per-rule false-positive/suppression telemetry (privacy-safe and opt-in where appropriate).
+
+### Phase 3 — Sampler integration
+
+- Implement the sampler adapter for one local inference runtime with logits and rewindable state.
+- Support phrase rules first; add regex bans only with explicit non-streaming or buffered-stream semantics.
+- Mark unsupported providers clearly and preserve the same patch/AST checks for all providers.
+- Tune project-owned phrase lists and strengths; maintain an allowlist and quality regression corpus.
+
+### Phase 4 — Daemon, memory, and Dev Mode foundation
+
+- Build daemon session lifecycle, local bounded diagnostics, redaction, retention/deletion settings, and memory scopes.
+- Add operational diagnostics for AST rejections, tool failures, stream parse errors, and subagent timeouts.
+- Deliver draft-only root-cause summaries with confidence/evidence boundaries.
+
+### Phase 5 — Confirmed GitHub dispatch and multi-client workflows
+
+- Implement review/edit card and explicit approval object bound to draft revision/repository.
+- Add API/MCP dispatcher with least-privilege access, idempotency, and a copy-only fallback.
+- Surface the same diagnostic and approval workflow in Web first, then Telegram/Discord using inline confirmation UI compatible with each client.
+
+### Phase 6 — Scale and polish
+
+- Add further language adapters and semantic skill routing.
+- Add multi-agent resource governor, shared watcher, build queue, reconnect/replay semantics, and virtualized long-session UI.
+- Validate claims against measured production metrics; revise thresholds based on telemetry and opt-in user feedback.
+
+---
+
+## 8. Safety, failure modes, and design decisions
+
+### 8.1 Be explicit about enforcement boundaries
+
+| Capability | What it can enforce | Important limitation |
+|---|---|---|
+| Prompt injector | Output format, preferred practices, selected project rules | Model may ignore or misunderstand instructions. |
+| Backtracking sampler | Selected phrase/token continuations in a hook-enabled generator | Requires logits and rewind state; many hosted APIs do not expose these. Can distort text if rules are too broad. |
+| AST gate | Syntax-aware detection of configured constructs in changed content | Does not prove semantic correctness, safe behavior, or successful compilation. |
+| Compiler/tests | Project-defined correctness checks | Can be slow, incomplete, environment-dependent, or unavailable. |
+| Dev Mode analysis | Summarize and hypothesize from selected diagnostics | AI analysis can be wrong; issue draft must be verified and approved. |
+
+### 8.2 False positives and exceptions
+
+- Keep `block`, `warning`, and `info` separate.
+- Provide per-project profiles (core/standard/strict) and explicit allowlists with reason/expiry where useful.
+- Default blockers should be narrow and evidence-based; an empty `catch` or `pass` should not be universally equivalent to a defect.
+- Avoid duplicating routine style checks already handled by ESLint, Clippy, formatters, or project linters unless there is a deliberate override.
+- Record suppression provenance so the user can audit exceptions.
+
+### 8.3 Privacy and security
+
+- Diagnostics are local-first and bounded. Redact secrets before storage/export; never include environment dumps or credentials.
+- Show exact diagnostic fields proposed for external transmission.
+- Require explicit approval for issue creation and bind approval to the final payload revision and target repository.
+- Validate patch paths against the workspace root; prevent traversal and symlink escapes according to project policy.
+- Treat model-proposed code, issue bodies, and tool outputs as untrusted input. Escape rendered content and do not interpret issue text as tool instructions.
+- Use least-privilege GitHub auth and avoid giving the diagnostic analyzer generic repository-write capability.
+
+### 8.4 Failure behavior
+
+- Missing grammar/parser: report “not checked,” do not silently mark clean.
+- Stale base hash or ambiguous old-text match: reject and regenerate/rebase, never pick an arbitrary match.
+- Gate findings: preserve the staged diff without applying; return structured evidence and a bounded repair opportunity.
+- Sampler retry exhaustion: stop or fall back according to a visible policy; do not spin forever.
+- Tool/runtime crash: persist only the configured sanitized event, present retry/cancel controls, and keep session status recoverable.
+- GitHub/MCP unavailable: keep the reviewed draft and offer copy/export; do not imply remote success.
+
+---
+
+## 9. References and provenance
+
+The uploaded notes identify these reference projects and concepts:
+
+- [`miqdadbadjuber/anti-slop`](https://github.com/miqdadbadjuber/anti-slop) — lifecycle-aware prompt/skill constraints and anti-slop concepts.
+- [`sam-paech/antislop-sampler`](https://github.com/sam-paech/antislop-sampler) — phrase matching, probability adjustment, and backtracking at generation time. Its notes explicitly discuss the requirement for cached state, logits, and token-by-token continuation, plus limitations for commercial APIs and regex streaming.
+- [`skew202/antislop`](https://github.com/skew202/antislop) — Tree-sitter and text-pattern-based detection of placeholders, deferrals, hedging, stubs, and dummy data across languages. Supplied documentation includes performance benchmarks; these are upstream figures, not independent OpenChat measurements.
+- [`openchamber/openchamber`](https://github.com/openchamber/openchamber) — inspiration for the proposed headless rewrite and agent workspace direction.
+
+This document is a design consolidation and implementation blueprint. It does not imply that these components have already been integrated, that the proposed latency targets have been achieved, or that Dev Mode/GitHub dispatch currently exists.

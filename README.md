@@ -75,6 +75,10 @@ File extensions are routing hints, not the only trigger: task intent, workspace 
 
 ---
 
+## 🌐 Provider Backends: OpenAI-Compatible Direct, or the OpenCode Gateway
+
+By default `openchatd` talks OpenAI-compatible `/chat/completions` straight to any endpoint (`[llm] provider = "openai-compat"`). As an alternative backend, `[llm] provider = "opencode"` borrows a local, trusted `opencode serve` as a **model gateway**: its credential vault fronts OpenCode Zen (`:free` models) and OpenCode Go (30+ models, one login) with zero extra key management for the user. Catalog + completion run over the native v2 API (`/api/model`, `/api/experimental/generate/text`, HTTP Basic auth via `OPENCODE_PASSWORD`); the adapter is honestly **chat-only** (no tool definitions on that route), and the capability flag makes the agent loop drop tool declarations accordingly - no hallucinated calls, no faked enforcement. Verified live: 125 catalog models surfaced through the picker, 23 flagged free, a real Go-model turn closed the loop.
+
 ## 🛠️ OpenChamber Shortfalls & The `open-chat` Architectural Fixes
 
 Through real-world development and multi-agent issue analysis in OpenChamber, eleven critical bottlenecks emerge. `open-chat` is architected from the ground up to eliminate every single one:

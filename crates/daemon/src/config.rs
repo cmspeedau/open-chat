@@ -84,9 +84,13 @@ impl Default for SkillsSettings {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawLlm {
+    /// "openai-compat" (default) or "opencode" (gateway via opencode serve).
+    provider: Option<String>,
     base_url: Option<String>,
     model: Option<String>,
     api_key_env: Option<String>,
+    /// Env var holding the opencode server Basic-auth password.
+    password_env: Option<String>,
     verify_command: Option<Vec<String>>,
     max_total_tokens: Option<usize>,
 }
@@ -94,11 +98,14 @@ struct RawLlm {
 /// Effective LLM endpoint settings after layer merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmSettings {
+    /// "openai-compat" | "opencode".
+    pub provider: String,
     pub base_url: String,
     pub model: String,
     /// Name of the environment variable holding the API key; the key
     /// itself never lives in config files.
     pub api_key_env: String,
+    pub password_env: String,
     /// Command proving a patched tree is healthy before a turn closes.
     pub verify_command: Option<Vec<String>>,
     pub max_total_tokens: usize,
@@ -107,9 +114,11 @@ pub struct LlmSettings {
 impl Default for LlmSettings {
     fn default() -> Self {
         Self {
+            provider: "openai-compat".into(),
             base_url: "https://api.openai.com/v1".into(),
             model: "gpt-4o-mini".into(),
             api_key_env: "OPENAI_API_KEY".into(),
+            password_env: "OPENCODE_PASSWORD".into(),
             verify_command: None,
             max_total_tokens: 24_000,
         }
@@ -194,6 +203,11 @@ impl RawConfig {
     fn merge_llm(self, base: LlmSettings) -> LlmSettings {
         let l = self.llm;
         LlmSettings {
+            provider: l
+                .provider
+                .filter(|s| matches!(s.trim(), "openai-compat" | "opencode"))
+                .map(|s| s.trim().to_owned())
+                .unwrap_or(base.provider),
             base_url: l
                 .base_url
                 .filter(|s| !s.trim().is_empty())
@@ -206,6 +220,10 @@ impl RawConfig {
                 .api_key_env
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or(base.api_key_env),
+            password_env: l
+                .password_env
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.password_env),
             verify_command: l
                 .verify_command
                 .filter(|v| !v.is_empty())
@@ -406,6 +424,24 @@ verify_command = ["cargo", "check", "--workspace"]
     fn unknown_llm_key_rejected() {
         let err = toml::from_str::<RawConfig>("[llm]\ntemperature_9000 = 1\n").unwrap_err();
         assert!(err.to_string().contains("temperature_9000"), "{err}");
+    }
+
+    #[test]
+    fn llm_provider_selects_opencode_gateway() {
+        let raw: RawConfig = toml::from_str(
+            "[llm]\nprovider = \"opencode\"\nbase_url = \"http://127.0.0.1:42415\"\nmodel = \"opencode-go/qwen4-max\"\n",
+        )
+        .unwrap();
+        let llm = raw.merge_llm(LlmSettings::default());
+        assert_eq!(llm.provider, "opencode");
+        assert_eq!(llm.base_url, "http://127.0.0.1:42415");
+        assert_eq!(llm.password_env, "OPENCODE_PASSWORD");
+        // unknown provider strings fall back to the default, never load
+        let raw: RawConfig = toml::from_str("[llm]\nprovider = \"sketchy\"\n").unwrap();
+        assert_eq!(
+            raw.merge_llm(LlmSettings::default()).provider,
+            "openai-compat"
+        );
     }
 
     #[test]

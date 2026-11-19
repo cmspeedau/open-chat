@@ -132,8 +132,18 @@ pub struct ChatResponse {
 /// Object-safe chat backend. Streaming happens client-side (SSE deltas are
 /// accumulated into one [`ChatResponse`]); per-token push to UIs is a
 /// Phase 5 concern layered on top via the same client internals.
-pub trait Provider: Send + Sync {
+pub trait Provider: Capabilities + Send + Sync {
     fn chat(&self, req: ChatRequest) -> BoxFuture<'_, ProviderResult<ChatResponse>>;
+}
+
+/// Provider-level capability declaration. Adapters that cannot carry the
+/// daemon's tool definitions must say so; the agent loop then sends no
+/// tools at all rather than letting the model hallucinate calls.
+pub trait Capabilities {
+    #[must_use]
+    fn supports_tools(&self) -> bool {
+        true
+    }
 }
 
 /// Endpoint settings for OpenAI-compatible `/chat/completions` servers.
@@ -221,6 +231,8 @@ impl OpenAi {
             .collect()
     }
 }
+
+impl Capabilities for OpenAi {}
 
 impl Provider for OpenAi {
     fn chat(&self, req: ChatRequest) -> BoxFuture<'_, ProviderResult<ChatResponse>> {

@@ -238,7 +238,11 @@ impl<'a> Agent<'a> {
                 .provider
                 .chat(ChatRequest {
                     messages: composed.messages.clone(),
-                    tools: self.registry.schemas(),
+                    tools: if self.provider.supports_tools() {
+                        self.registry.schemas()
+                    } else {
+                        Vec::new()
+                    },
                     model: self.model.clone(),
                 })
                 .await
@@ -528,6 +532,8 @@ mod tests {
             }
         }
     }
+
+    impl crate::provider::Capabilities for Scripted {}
 
     impl Provider for Scripted {
         fn chat(&self, req: ChatRequest) -> BoxFuture<'_, Result<ChatResponse, ProviderError>> {

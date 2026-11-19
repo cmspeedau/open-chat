@@ -11,6 +11,7 @@
 
 mod config;
 mod engine;
+mod opencode;
 mod serve;
 
 use std::path::PathBuf;

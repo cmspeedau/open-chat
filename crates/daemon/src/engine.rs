@@ -10,7 +10,7 @@ use openchat_governor::Governor;
 use openchat_memory::MemoryStore;
 use openchat_session::agent::{Agent, AgentError, AgentEvent, AgentOutcome};
 use openchat_session::events::{Badges, SkillBadge, TurnEvent};
-use openchat_session::provider::{OpenAi, OpenAiConfig};
+
 use openchat_session::tools::{SharedMemory, standard_registry};
 use openchat_telegram as tg;
 use openchat_telegram::EnginePort;
@@ -187,13 +187,11 @@ impl Engine {
         publisher: Option<broadcast::Sender<TurnEvent>>,
         on_event: &mut (dyn FnMut(&AgentEvent<'_>) + Send),
     ) -> std::result::Result<AgentOutcome, AgentError> {
-        let api_key = std::env::var(&self.llm.api_key_env).unwrap_or_default();
-        let provider = OpenAi::new(OpenAiConfig {
-            base_url: self.llm.base_url.clone(),
-            api_key,
-            model: self.llm.model.clone(),
-        })
-        .map_err(AgentError::Provider)?;
+        let provider = self.build_provider().map_err(|e| {
+            AgentError::Provider(openchat_session::provider::ProviderError::Config(
+                e.to_string(),
+            ))
+        })?;
 
         // Stack -> skills, resolved at turn start.
         let fp = openchat_skills::fingerprint(&self.cwd);
@@ -252,7 +250,7 @@ impl Engine {
             .unwrap_or_default();
         let badges_checks_skipped = self.checks_skipped.clone();
 
-        let mut agent = Agent::new(&provider, &registry, Some(Arc::clone(&self.store)))
+        let mut agent = Agent::new(provider.as_ref(), &registry, Some(Arc::clone(&self.store)))
             .with_model(self.current_model())
             .with_budget(self.llm.max_total_tokens, 8)
             .with_diagnostics(Arc::clone(&diagnostics))
@@ -339,6 +337,7 @@ impl Engine {
             "stack": fp.stack_tag(),
             "active_skills": bindings.iter().map(|b| b.skill.id.as_str()).collect::<Vec<_>>(),
             "skill_gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
+            "llm_provider": self.llm.provider,
             "llm_model": self.current_model(),
             "model_override": self.model_override.lock().map(|m| !m.is_empty()).unwrap_or(false),
             "verifier": self.verifier.as_ref().map(|(label, _)| label.clone()),
@@ -347,6 +346,60 @@ impl Engine {
             "git_branch": self.git_branch(),
             "version": env!("CARGO_PKG_VERSION"),
         })
+    }
+
+    /// Construct the configured provider backend. "openai-compat" is the
+    /// native OpenAI-compatible client; "opencode" borrows a local
+    /// `opencode serve` as a model gateway (chat-only: opencode's
+    /// generate route carries no tool definitions, honestly flagged by
+    /// the capability flag).
+    ///
+    /// # Errors
+    ///
+    /// Provider config/validation failures.
+    fn build_opencode(&self) -> Result<crate::opencode::OpenCodeProvider> {
+        let password = std::env::var(&self.llm.password_env).with_context(|| format!(
+            "{} is not set; start/point at an `opencode serve` you trust, or use provider=\"openai-compat\"",
+            self.llm.password_env
+        ))?;
+        let model = self.current_model();
+        crate::opencode::OpenCodeProvider::new(crate::opencode::OpenCodeConfig {
+            base: self.llm.base_url.clone(),
+            username: "opencode".into(),
+            password,
+            request_timeout: std::time::Duration::from_secs(120),
+            default_model: (!model.is_empty()).then_some(model),
+        })
+        .context("invalid opencode provider config")
+    }
+
+    pub fn build_provider(&self) -> Result<Box<dyn openchat_session::provider::Provider>> {
+        if self.llm.provider == "opencode" {
+            return Ok(Box::new(self.build_opencode()?));
+        }
+        let api_key = std::env::var(&self.llm.api_key_env).unwrap_or_default();
+        let provider =
+            openchat_session::provider::OpenAi::new(openchat_session::provider::OpenAiConfig {
+                base_url: self.llm.base_url.clone(),
+                api_key,
+                model: self.current_model(),
+            })
+            .context("invalid [llm] provider config")?;
+        Ok(Box::new(provider))
+    }
+
+    /// Model catalog for the picker, dispatched by provider kind.
+    ///
+    /// # Errors
+    ///
+    /// Provider/list failures surface as text (disclosed, never faked).
+    pub async fn catalog_models(&self) -> std::result::Result<Vec<String>, String> {
+        if self.llm.provider == "opencode" {
+            let pc = self.build_opencode().map_err(|e| e.to_string())?;
+            let models = pc.list_models().await.map_err(|e| e.to_string())?;
+            return Ok(models.into_iter().map(|(id, _)| id).collect());
+        }
+        self.list_models().await
     }
 
     /// Model for the next turn: runtime override else configured default.

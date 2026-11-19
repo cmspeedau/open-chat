@@ -162,7 +162,7 @@ async fn handle(mut sock: TcpStream, engine: Arc<Engine>, hub: Arc<Hub>) -> anyh
             Ok(())
         }
         ("GET", "/healthz") => send_json(&mut sock, 200, &json!({"ok": true})).await,
-        ("GET", "/models") => match engine.list_models().await {
+        ("GET", "/models") => match engine.catalog_models().await {
             Ok(models) => send_json(&mut sock, 200, &json!({"models": models})).await,
             Err(e) => send_json(&mut sock, 502, &json!({"error": e})).await,
         },

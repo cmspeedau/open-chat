@@ -34,6 +34,10 @@ pub struct Engine {
     pub verifier: Option<(String, Vec<String>)>,
     /// Stack-implied checks unavailable on this host, disclosed not faked.
     pub checks_skipped: Vec<String>,
+    /// Runtime model override from the UI model picker; empty means "use
+    /// config". Intentionally not persisted: a restart returns to the
+    /// configured model, and the status modal says so.
+    pub model_override: std::sync::Mutex<String>,
 }
 
 /// Pick the verification command from the stack, only choosing tools the
@@ -170,6 +174,7 @@ impl Engine {
             telegram,
             verifier,
             checks_skipped,
+            model_override: std::sync::Mutex::new(String::new()),
         })
     }
 
@@ -248,6 +253,7 @@ impl Engine {
         let badges_checks_skipped = self.checks_skipped.clone();
 
         let mut agent = Agent::new(&provider, &registry, Some(Arc::clone(&self.store)))
+            .with_model(self.current_model())
             .with_budget(self.llm.max_total_tokens, 8)
             .with_diagnostics(Arc::clone(&diagnostics))
             .with_surfaces(Arc::clone(&surfaces))
@@ -333,10 +339,99 @@ impl Engine {
             "stack": fp.stack_tag(),
             "active_skills": bindings.iter().map(|b| b.skill.id.as_str()).collect::<Vec<_>>(),
             "skill_gaps": gaps.iter().map(|g| g.language.as_str()).collect::<Vec<_>>(),
-            "llm_model": self.llm.model,
+            "llm_model": self.current_model(),
+            "model_override": self.model_override.lock().map(|m| !m.is_empty()).unwrap_or(false),
             "verifier": self.verifier.as_ref().map(|(label, _)| label.clone()),
             "checks_skipped": self.checks_skipped,
+            "cwd": self.cwd.display().to_string(),
+            "git_branch": self.git_branch(),
+            "version": env!("CARGO_PKG_VERSION"),
         })
+    }
+
+    /// Model for the next turn: runtime override else configured default.
+    #[must_use]
+    pub fn current_model(&self) -> String {
+        let guard = self.model_override.lock().expect("model lock");
+        if guard.is_empty() {
+            self.llm.model.clone()
+        } else {
+            guard.clone()
+        }
+    }
+
+    /// Runtime model switch for the UI model picker. Not persisted across
+    /// restarts, and the status modal says so.
+    ///
+    /// # Errors
+    ///
+    /// Blank names rejected; anything else passes through and the
+    /// provider validates.
+    pub fn set_model(&self, name: &str) -> std::result::Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("model name is empty".into());
+        }
+        *self.model_override.lock().expect("model lock") = name.to_owned();
+        tracing::info!(model = %name, "model override set");
+        Ok(())
+    }
+
+    /// Forward GET {base}/models to the provider so the UI offers a real
+    /// list; failures surface as text, never an empty fake list.
+    ///
+    /// # Errors
+    ///
+    /// Transport, status, or parse failure from the provider call.
+    pub async fn list_models(&self) -> std::result::Result<Vec<String>, String> {
+        let api_key = std::env::var(&self.llm.api_key_env).unwrap_or_default();
+        let url = format!("{}/models", self.llm.base_url.trim_end_matches('/'));
+        let mut req = reqwest::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(10));
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("provider unreachable: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("provider returned {}", status.as_u16()));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("bad provider response: {e}"))?;
+        let ids = body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m["id"].as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return Err("provider reported no models".into());
+        }
+        Ok(ids)
+    }
+
+    /// Current git branch of the workspace, if it is a repo and git runs.
+    #[must_use]
+    pub fn git_branch(&self) -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.cwd)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let branch = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        (!branch.is_empty()).then_some(branch)
     }
 }
 

@@ -162,6 +162,36 @@ async fn handle(mut sock: TcpStream, engine: Arc<Engine>, hub: Arc<Hub>) -> anyh
             Ok(())
         }
         ("GET", "/healthz") => send_json(&mut sock, 200, &json!({"ok": true})).await,
+        ("GET", "/models") => match engine.list_models().await {
+            Ok(models) => send_json(&mut sock, 200, &json!({"models": models})).await,
+            Err(e) => send_json(&mut sock, 502, &json!({"error": e})).await,
+        },
+        ("POST", "/model") => {
+            let want = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["model"].as_str().map(str::to_owned));
+            match want {
+                Some(name) => match engine.set_model(&name) {
+                    Ok(()) => {
+                        send_json(
+                            &mut sock,
+                            200,
+                            &json!({"ok": true, "model": engine.current_model()}),
+                        )
+                        .await
+                    }
+                    Err(e) => send_json(&mut sock, 400, &json!({"error": e})).await,
+                },
+                None => {
+                    send_json(
+                        &mut sock,
+                        400,
+                        &json!({"error": "expected {\"model\": \"name\"}"}),
+                    )
+                    .await
+                }
+            }
+        }
         ("GET", "/status") => {
             let doc = engine.status_json().await;
             send_json(&mut sock, 200, &doc).await
@@ -384,14 +414,22 @@ mod tests {
                 "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
                 "data: [DONE]\n\n",
             );
+            let models = r#"{"data":[{"id":"mock"},{"id":"mock-mini"}]}"#;
             for conn in listener.incoming() {
                 let Ok(mut sock) = conn else { continue };
                 let mut buf = [0u8; 8192];
-                let _ = sock.read(&mut buf);
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let is_models = head.lines().next().is_some_and(|l| l.contains("/models"));
+                let (ctype, payload): (&str, &str) = if is_models {
+                    ("application/json", models)
+                } else {
+                    ("text/event-stream", body)
+                };
                 write!(
                     sock,
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{body}",
-                    body.len()
+                    "HTTP/1.1 200 OK\r\ncontent-type: {ctype}\r\ncontent-length: {}\r\n\r\n{payload}",
+                    payload.len()
                 )
                 .unwrap();
                 sock.flush().unwrap();
@@ -573,6 +611,54 @@ mod tests {
                     .iter()
                     .any(|e| matches!(e, TurnEvent::TurnClosed { .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn model_picker_round_trip() {
+        let (engine, _hub, addr) = harness().await;
+        let client = reqwest::Client::new();
+        let got: serde_json::Value = client
+            .get(format!("http://{addr}/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(got["models"], json!(["mock", "mock-mini"]), "{got}");
+        let set: serde_json::Value = client
+            .post(format!("http://{addr}/model"))
+            .json(&json!({"model": "mock-mini"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(set["model"], "mock-mini");
+        assert_eq!(
+            engine.current_model(),
+            "mock-mini",
+            "override effective for turns"
+        );
+        let status: serde_json::Value = client
+            .get(format!("http://{addr}/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["llm_model"], "mock-mini");
+        assert_eq!(status["model_override"], true);
+        // blank name is refused, and the request line must never hit the provider empty
+        let bad = client
+            .post(format!("http://{addr}/model"))
+            .json(&json!({"model": "  "}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 400);
     }
 
     #[tokio::test]

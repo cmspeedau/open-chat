@@ -71,13 +71,9 @@ pub struct RecallHit {
     pub source: HitSource,
 }
 
-/// Rough token estimate: cl100k averages ~4 bytes/token for prose. Budget
-/// math here only needs to be stable, not exact; the compositor (Phase 4)
-/// owns the real tokenizer.
-#[must_use]
-pub fn estimate_tokens(text: &str) -> usize {
-    text.len().div_ceil(4)
-}
+/// Rough token estimate lives in `openchat_core::estimate_tokens`; the
+/// budget math below uses it to size recall results.
+use openchat_core::estimate_tokens;
 
 /// Little-endian f32 blob, the wire format `vec0` KNN queries take.
 #[must_use]

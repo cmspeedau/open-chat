@@ -13,9 +13,8 @@ mod error;
 mod store;
 
 pub use error::MemoryError;
-pub use store::{
-    HitSource, MemoryEntry, MemoryScope, MemoryStore, RecallHit, estimate_tokens, vector_blob,
-};
+pub use openchat_core::estimate_tokens;
+pub use store::{HitSource, MemoryEntry, MemoryScope, MemoryStore, RecallHit, vector_blob};
 
 use std::sync::Once;
 

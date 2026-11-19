@@ -362,8 +362,8 @@ The `open-chat` implementation is structured into phased milestones addressing a
 
 ### Phase 2: Token Efficiency & Code Generation
 - [x] **Surgical Diff & Replace Engine:** Native `file_patch` / search-and-replace tool eliminating full-file rewrites and cutting output tokens by ~80%.
-- [ ] **Strict Anti-Slop `[during]` Mode Enforcement:** Automatic negative constraint injection to eliminate polite filler, pre-tool monologue, and post-code summaries.
-- [ ] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
+- [x] **Strict Anti-Slop `[during]` Mode Enforcement:** Automatic negative constraint injection to eliminate polite filler, pre-tool monologue, and post-code summaries.
+- [x] **Autonomous Lint & Verification Loop:** Pre-completion check runner (`cargo check`, `tsc`, `pytest`) preventing unverified broken diffs from landing.
 - [ ] **Runtime Code Memory Bug Diagnostics:** Automated memory-safety skill injection (RAII, weak refs, pointer hygiene) and diagnostic trap on memory sanitizer errors.
 
 ### Phase 3: 50+ Skill Scale & Stack Discovery

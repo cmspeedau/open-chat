@@ -10,15 +10,19 @@ license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
+futures-util = "0.3"
 libc = "0.2"
 notify = "8"
 openchat-core = { path = "crates/core" }
 openchat-governor = { path = "crates/governor" }
 openchat-memory = { path = "crates/memory" }
+openchat-session = { path = "crates/session" }
 openchat-tools = { path = "crates/tools" }
 openchat-watcher = { path = "crates/watcher" }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sqlite-vec = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

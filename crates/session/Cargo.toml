@@ -1,0 +1,24 @@
+[package]
+name = "openchat-session"
+description = "Session engine: OpenAI-compatible provider client, context compositor, tool registry, agent loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+futures-util.workspace = true
+openchat-core.workspace = true
+openchat-governor.workspace = true
+openchat-memory.workspace = true
+openchat-tools.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "time"] }

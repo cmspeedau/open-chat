@@ -15,6 +15,7 @@ anyhow.workspace = true
 dirs = "6"
 openchat-governor.workspace = true
 openchat-memory.workspace = true
+openchat-session.workspace = true
 openchat-tools.workspace = true
 openchat-watcher.workspace = true
 serde.workspace = true

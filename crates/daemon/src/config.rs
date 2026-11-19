@@ -11,14 +11,51 @@ use serde::Deserialize;
 use openchat_governor::{CpuCores, GovernorConfig};
 
 /// On-disk shape; every key optional so partial files inherit defaults.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
     resources: RawResources,
+    #[serde(default)]
+    llm: RawLlm,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLlm {
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+    verify_command: Option<Vec<String>>,
+    max_total_tokens: Option<usize>,
+}
+
+/// Effective LLM endpoint settings after layer merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmSettings {
+    pub base_url: String,
+    pub model: String,
+    /// Name of the environment variable holding the API key; the key
+    /// itself never lives in config files.
+    pub api_key_env: String,
+    /// Command proving a patched tree is healthy before a turn closes.
+    pub verify_command: Option<Vec<String>>,
+    pub max_total_tokens: usize,
+}
+
+impl Default for LlmSettings {
+    fn default() -> Self {
+        Self {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            api_key_env: "OPENAI_API_KEY".into(),
+            verify_command: None,
+            max_total_tokens: 24_000,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawResources {
     max_cpu_cores: Option<CoreSpec>,
@@ -29,7 +66,7 @@ struct RawResources {
 }
 
 /// `max_cpu_cores = 4` or `max_cpu_cores = "50%"`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum CoreSpec {
     Count(u64),
@@ -59,7 +96,7 @@ fn parse_memory(spec: &str) -> Result<u64> {
 }
 
 impl RawConfig {
-    fn merge(self, base: GovernorConfig) -> Result<GovernorConfig> {
+    fn merge_resources(self, base: GovernorConfig) -> Result<GovernorConfig> {
         let r = self.resources;
         let max_cpu_cores = match r.max_cpu_cores {
             None => base.max_cpu_cores,
@@ -92,6 +129,32 @@ impl RawConfig {
             memory_low_water,
         })
     }
+
+    fn merge_llm(self, base: LlmSettings) -> LlmSettings {
+        let l = self.llm;
+        LlmSettings {
+            base_url: l
+                .base_url
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.base_url),
+            model: l
+                .model
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.model),
+            api_key_env: l
+                .api_key_env
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(base.api_key_env),
+            verify_command: l
+                .verify_command
+                .filter(|v| !v.is_empty())
+                .or(base.verify_command),
+            max_total_tokens: l
+                .max_total_tokens
+                .filter(|n| *n > 0)
+                .unwrap_or(base.max_total_tokens),
+        }
+    }
 }
 
 /// Discover config files: project `.openchat/` over user `~/.openchat/`.
@@ -111,22 +174,24 @@ pub fn discover(start_dir: &Path) -> Vec<PathBuf> {
     found.into_iter().collect()
 }
 
-/// Load the effective governor config, later files overriding earlier ones.
-pub fn load(start_dir: &Path, explicit: Option<&Path>) -> Result<GovernorConfig> {
+/// Load the effective configs, later files overriding earlier ones.
+pub fn load(start_dir: &Path, explicit: Option<&Path>) -> Result<(GovernorConfig, LlmSettings)> {
     let files = match explicit {
         Some(path) => vec![path.to_path_buf()],
         None => discover(start_dir),
     };
     let mut config = GovernorConfig::default();
+    let mut llm = LlmSettings::default();
     for path in files {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let raw: RawConfig =
             toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
-        config = raw.merge(config)?;
+        config = raw.clone().merge_resources(config)?;
+        llm = raw.merge_llm(llm);
         tracing::info!(path = %path.display(), "config layer applied");
     }
-    Ok(config)
+    Ok((config, llm))
 }
 
 #[cfg(test)]
@@ -145,7 +210,7 @@ low_process_priority = true
 "#,
         )
         .unwrap();
-        let cfg = raw.merge(GovernorConfig::default()).unwrap();
+        let cfg = raw.merge_resources(GovernorConfig::default()).unwrap();
         assert_eq!(cfg.max_cpu_cores, CpuCores::Count(4));
         assert_eq!(cfg.max_concurrent_builds, 1);
         assert_eq!(cfg.max_worker_memory, 4 * 1024 * 1024 * 1024);
@@ -159,7 +224,7 @@ low_process_priority = true
     #[test]
     fn percent_core_spec_supported() {
         let raw: RawConfig = toml::from_str("[resources]\nmax_cpu_cores = \"50%\"\n").unwrap();
-        let cfg = raw.merge(GovernorConfig::default()).unwrap();
+        let cfg = raw.merge_resources(GovernorConfig::default()).unwrap();
         assert_eq!(cfg.max_cpu_cores, CpuCores::Percent(50));
     }
 
@@ -170,7 +235,7 @@ low_process_priority = true
                 .unwrap();
         let top: RawConfig = toml::from_str("[resources]\nmax_cpu_cores = 2\n").unwrap();
         let cfg = top
-            .merge(base.merge(GovernorConfig::default()).unwrap())
+            .merge_resources(base.merge_resources(GovernorConfig::default()).unwrap())
             .unwrap();
         assert_eq!(cfg.max_cpu_cores, CpuCores::Count(2));
         assert!(!cfg.low_process_priority, "unset keys keep the lower layer");
@@ -193,6 +258,43 @@ low_process_priority = true
     #[test]
     fn bad_low_water_rejected() {
         let raw: RawConfig = toml::from_str("[resources]\nmemory_low_water = 1.5\n").unwrap();
-        assert!(raw.merge(GovernorConfig::default()).is_err());
+        assert!(raw.merge_resources(GovernorConfig::default()).is_err());
+    }
+
+    #[test]
+    fn llm_section_parses_with_defaults_kept() {
+        let raw: RawConfig = toml::from_str(
+            r#"
+[llm]
+model = "qwen2.5-coder:32b"
+base_url = "http://127.0.0.1:11434/v1"
+verify_command = ["cargo", "check", "--workspace"]
+"#,
+        )
+        .unwrap();
+        let llm = raw.merge_llm(LlmSettings::default());
+        assert_eq!(llm.model, "qwen2.5-coder:32b");
+        assert_eq!(llm.base_url, "http://127.0.0.1:11434/v1");
+        assert_eq!(
+            llm.verify_command.as_deref().unwrap(),
+            ["cargo", "check", "--workspace"]
+        );
+        assert_eq!(llm.api_key_env, "OPENAI_API_KEY", "untouched default");
+        assert_eq!(llm.max_total_tokens, 24_000);
+    }
+
+    #[test]
+    fn llm_blank_overrides_are_ignored() {
+        let raw: RawConfig =
+            toml::from_str("[llm]\nmodel = \"  \"\nverify_command = []\n").unwrap();
+        let llm = raw.merge_llm(LlmSettings::default());
+        assert_eq!(llm.model, "gpt-4o-mini");
+        assert!(llm.verify_command.is_none());
+    }
+
+    #[test]
+    fn unknown_llm_key_rejected() {
+        let err = toml::from_str::<RawConfig>("[llm]\ntemperature_9000 = 1\n").unwrap_err();
+        assert!(err.to_string().contains("temperature_9000"), "{err}");
     }
 }

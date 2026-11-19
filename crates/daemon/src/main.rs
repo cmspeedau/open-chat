@@ -11,14 +11,19 @@
 mod config;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use openchat_governor::Governor;
 use openchat_memory::MemoryStore;
+use openchat_session::agent::{Agent, AgentEvent};
+use openchat_session::provider::{OpenAi, OpenAiConfig};
+use openchat_session::tools::standard_registry;
 use openchat_tools::compact::ToolRecord;
 use openchat_tools::exec::{ExecRequest, TaskKind, ToolRunner};
 use openchat_watcher::{WatcherConfig, WorkspaceWatcher};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::Mutex;
 
 use crate::config::load;
 
@@ -43,6 +48,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some("exec") => exec_main(&argv[1..]).await,
+        Some("chat") => chat_main(&argv[1..]).await,
         _ => daemon_main(&argv).await,
     }
 }
@@ -80,8 +86,8 @@ async fn exec_main(argv: &[String]) -> Result<()> {
     let args: Vec<String> = argv[sep + 2..].to_vec();
 
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let governor = Governor::new(load(&cwd, config_path.as_deref())?)
-        .context("failed to start resource governor")?;
+    let (governor_config, _llm) = load(&cwd, config_path.as_deref())?;
+    let governor = Governor::new(governor_config).context("failed to start resource governor")?;
     let kind = if light {
         TaskKind::Light
     } else {
@@ -107,15 +113,95 @@ async fn exec_main(argv: &[String]) -> Result<()> {
     );
 }
 
+/// One-shot agent turn from the command line: composes context, talks to
+/// the configured OpenAI-compatible provider, dispatches tools under the
+/// governor, and refuses to close until verification is green.
+async fn chat_main(argv: &[String]) -> Result<()> {
+    let mut argv = argv.to_vec();
+    let (config_path, _light) = extract_flags(&mut argv);
+    let prompt = argv.join(" ");
+    if prompt.trim().is_empty() {
+        anyhow::bail!("usage: openchatd chat [--config PATH] \"<request>\"");
+    }
+
+    let cwd = std::env::current_dir().context("failed to resolve cwd")?;
+    let (governor_config, llm) =
+        load(&cwd, config_path.as_deref()).context("failed to load open-chat config")?;
+    let api_key = std::env::var(&llm.api_key_env).unwrap_or_default();
+    let provider = OpenAi::new(OpenAiConfig {
+        base_url: llm.base_url.clone(),
+        api_key,
+        model: llm.model.clone(),
+    })
+    .context("invalid [llm] provider config")?;
+
+    let governor =
+        Arc::new(Governor::new(governor_config).context("failed to start resource governor")?);
+    let store = Arc::new(Mutex::new(
+        MemoryStore::open(&cwd.join(".openchat").join("memory.sqlite"), VECTOR_DIMS)
+            .context("failed to open workspace memory")?,
+    ));
+    // README: verification is cargo check / tsc / pytest per stack. v1
+    // auto-detects the Rust case; others come from explicit config.
+    let verifier = llm.verify_command.clone().or_else(|| {
+        cwd.join("Cargo.toml")
+            .is_file()
+            .then(|| vec!["cargo".into(), "check".into(), "--workspace".into()])
+    });
+    let registry = standard_registry(Arc::clone(&governor), &cwd, Arc::clone(&store), verifier);
+
+    let agent = Agent::new(&provider, &registry, Some(store)).with_budget(llm.max_total_tokens, 8);
+    let outcome = agent
+        .run(&prompt, &mut |event| match event {
+            AgentEvent::Iteration { index, composed } => {
+                eprintln!(
+                    "· iteration {index} ({} prompt tokens est.)",
+                    composed.total_tokens
+                );
+            }
+            AgentEvent::ToolCalled { name, ok, digest } => {
+                eprintln!("· {} {name}: {digest}", if *ok { "✓" } else { "✗" });
+            }
+            AgentEvent::FinalVerification { ok } => {
+                eprintln!(
+                    "· verification {}",
+                    if *ok {
+                        "green, closing turn"
+                    } else {
+                        "red, turn stays open"
+                    }
+                );
+            }
+            AgentEvent::AssistantText(_) => {} // final text printed once below
+        })
+        .await
+        .context("agent turn failed")?;
+
+    println!("{}", outcome.text);
+    let sections = outcome
+        .composed
+        .report
+        .iter()
+        .map(|s| format!("{}={}", s.name, s.tokens))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!(
+        "· turn closed in {} iterations [{sections}]",
+        outcome.iterations
+    );
+    Ok(())
+}
+
 async fn daemon_main(argv: &[String]) -> Result<()> {
     let mut argv = argv.to_vec();
     let (config_path, _light) = extract_flags(&mut argv);
     if let Some(unknown) = argv.first() {
-        anyhow::bail!("unknown argument {unknown:?} (expected --config, --version, or `exec`)");
+        anyhow::bail!(
+            "unknown argument {unknown:?} (expected --config, --version, `exec`, or `chat`)"
+        );
     }
-
     let cwd = std::env::current_dir().context("failed to resolve cwd")?;
-    let governor_config =
+    let (governor_config, _llm) =
         load(&cwd, config_path.as_deref()).context("failed to load open-chat config")?;
     let governor = Governor::new(governor_config).context("failed to start resource governor")?;
 

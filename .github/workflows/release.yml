@@ -85,7 +85,10 @@ jobs:
       - name: run on an older distro (Debian stable, no FUSE device)
         run: |
           set -euo pipefail
-          image="$(basename dist/open-chat-*-x86_64.AppImage)"
+          # Full path under the bind mount, not just the basename: the image
+          # lives in dist/, so the container sees /w/dist/<name>.
+          image="dist/$(basename dist/open-chat-*-x86_64.AppImage)"
+          [ -f "$image" ] || { echo "error: no image at $image" >&2; exit 1; }
           cid="$(docker run -d --rm --network host -v "$PWD:/w" -w /w \
                   -e APPIMAGE_EXTRACT_AND_RUN=1 \
                   appimagecrafters/tests-env:debian-stable "/w/$image" \

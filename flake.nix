@@ -66,12 +66,12 @@
           # Catches manifest/lock/filename drift before a tag does: the bytes
           # we ship must report the version the manifest claims.
           version-is-manifest = pkgsFor.${system}.runCommand "open-chat-version-gate" { } ''
-            out="$(${pkg}/bin/openchatd --version)"
-            if [ "$out" != "openchatd ${manifestVersion}" ]; then
-              echo "version gate failed: binary says '$out', manifest says '${manifestVersion}'" >&2
+            reported="$(${pkg}/bin/openchatd --version)"
+            if [ "$reported" != "openchatd ${manifestVersion}" ]; then
+              echo "version gate failed: binary says '$reported', manifest says '${manifestVersion}'" >&2
               exit 1
             fi
-            touch $out
+            touch "$out"
           '';
         }
       );

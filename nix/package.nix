@@ -1,6 +1,8 @@
 {
   lib,
   rustPlatform,
+  cacert,
+  makeWrapper,
   sqlite,
   src,
 }:
@@ -20,8 +22,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # is a one-line diff. Refresh with scripts/refresh-cargo-hash.sh.
   cargoHash = lib.trim (builtins.readFile ./cargoHash.txt);
 
-  # The suite is a real gate: it binds loopback ports against in-process mock
-  # providers, so it needs no network and runs inside the sandbox.
+  # The suite binds loopback ports against in-process mock providers, so it
+  # needs no network - but CI showed it does need a CA store, because reqwest
+  # builds a root store whenever a Client is constructed. See cacert below.
   doCheck = true;
 
   strictDeps = true;
@@ -33,6 +36,31 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # libsqlite3 requirement - verified here with ldd. The Nix sandbox has no
   # implicit libsqlite3, so provide one purely to satisfy the linker.
   buildInputs = [ sqlite ];
+
+  # reqwest 0.13's rustls platform verifier builds its root store from the
+  # system trust store when a Client is *constructed*, and it fails the build
+  # if no CA bundle is found - even when the client only ever talks to
+  # http://127.0.0.1. The sandbox has no /etc/ssl/certs, so point it at the
+  # nixpkgs bundle, which is what any ordinary distro supplies implicitly.
+  # Verified from the CI log: 11 daemon tests failed with exactly
+  # "No CA certificates were loaded from the system", all of them only because
+  # they build a client.
+  nativeBuildInputs = [
+    cacert
+    makeWrapper
+  ];
+
+  SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+
+  # The same reasoning applies after installation: a daemon started from the
+  # store should not depend on the host happening to expose a discoverable CA
+  # bundle, or the first client it constructs fails at build time. Wrapping
+  # pins the bundle the build was given. checks.version-is-manifest runs
+  # $out/bin/openchatd, so a broken wrapper cannot pass silently.
+  postInstall = ''
+    wrapProgram "$out/bin/openchatd" --set SSL_CERT_FILE "${cacert}/etc/ssl/certs/ca-bundle.crt"
+  '';
 
   # nixpkgs' cargo environment asks aws-lc-sys (through rustls) to link a
   # system-installed AWS-LC; nothing here provides one, so the build script

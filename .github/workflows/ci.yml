@@ -57,6 +57,18 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Runs the formatter and then fails on the diff it made, so the log
+      # shows precisely what nixfmt wanted instead of just "unformatted".
+      - name: nix files are formatted
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          nix fmt
+          git diff --exit-code -- flake.nix nix/ || {
+            echo "the diff above is what nixfmt wants applied to flake.nix / nix/" >&2
+            exit 1
+          }
+
       - name: flake check (build, tests, version gate)
         run: nix flake check --print-build-logs
 

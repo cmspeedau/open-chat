@@ -3,6 +3,7 @@
   rustPlatform,
   cacert,
   makeWrapper,
+  rustfmt,
   sqlite,
   src,
 }:
@@ -48,6 +49,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeBuildInputs = [
     cacert
     makeWrapper
+    # The patch engine formats Rust by running `rustfmt`, and two tests
+    # assert that it happened. rustPlatform provides cargo and rustc but not
+    # the formatter, so without this the suite fails for a missing tool
+    # rather than for a broken engine.
+    rustfmt
   ];
 
   SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";

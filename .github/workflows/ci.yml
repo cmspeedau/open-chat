@@ -65,6 +65,18 @@ jobs:
           nix build --print-build-logs
           result/bin/openchatd --version
 
+      # The lockfile nix just used, handed back verbatim so it can be
+      # committed. Reproducible pins should come from a real evaluation, not
+      # from someone transcribing a rev out of a log line.
+      - name: upload generated flake.lock
+        if: matrix.runner == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: flake-lock
+          path: flake.lock
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Builds the AppImage with the same script and the same pinned tooling the
   # release job uses, then proves it actually serves.
   appimage:

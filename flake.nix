@@ -102,7 +102,7 @@
               pkgs.squashfsTools # mksquashfs + unsquashfs
               pkgs.stdenv.cc # cc builder for aws-lc-sys / bundled SQLite
               pkgs.zsync # zsyncmake for delta updates
-            ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.appimage-run ];
+            ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.appimage-run ];
 
             shellHook = ''
               echo "open-chat dev shell: cargo test --workspace, packaging/build-appimage.sh"
@@ -111,6 +111,6 @@
         }
       );
 
-      formatter = eachSystem (system: pkgsFor.${system}.nixfmt-rfc-style);
+      formatter = eachSystem (system: pkgsFor.${system}.nixfmt);
     };
 }

@@ -485,3 +485,13 @@ The `open-chat` implementation is structured into phased milestones addressing a
 - [x] **Interactive Dynamic Core Throttling Controls:** OpenChamber-style header pill / settings slider and bot chat commands (`/cores <n>`, `/governor status`) for real-time CPU throttling adjustments via daemon IPC.
 - [x] **Telegram Bot Gateway:** Mobile control plane with inline action buttons for skill gap prompts, diff reviews, core throttling, and execution status.
 - [ ] **Discord Bot Gateway:** Thread-based workspace session manager for team and multi-project workflows.
+
+### Phase 6: Release Engineering (v1.0.0)
+- [x] **Single Version Source:** `[workspace.package] version` drives the binary, the flake package, the AppImage filename and the CI checks; `nix flake check` runs `openchatd --version` against the manifest, and the release workflow refuses a tag that matches neither.
+- [x] **Nix Flake:** `nix build .#openchatd` / `nix run .` / `nix develop`, pinned by a committed `flake.lock` produced by a real evaluation, and the whole test suite (except the crate needing inotify the sandbox does not provide) runs inside `nix flake check`.
+- [x] **AppImage Packaging:** one `packaging/build-appimage.sh` used locally and by CI; appimagetool + type2 runtime pinned by sha256 in `packaging/tools.lock`; desktop file and AppStream metadata validated with severities parsed from the reports.
+- [x] **Portability Floor Gate:** releases build on ubuntu-22.04 and `--max-glibc 2.35` refuses a binary whose `GLIBC_*` symbols are newer, so the published image states its real requirement (glibc >= 2.35: Ubuntu 22.04+, Debian 12+) instead of hoping.
+- [x] **Runtime Proof in CI:** the built image is executed - `/healthz`, `/status`, `/usage`, the panel and an honest `/models` error - and again inside a Debian 12 container with no `/dev/fuse` (extract-and-run).
+- [x] **Automated Release:** tag `v1.0.0` publishes the AppImage, a real `.zsync` delta manifest and `SHA256SUMS.txt`; verified by downloading the assets and checking them rather than reading the job log.
+- [ ] **aarch64 Packaging:** dropped for now, not claimed. The flake lists only systems a green runner proved; no arm AppImage is published because the pinned tooling is x86_64-only.
+- [ ] **Image signing / checksum policy beyond SHA256SUMS:** the runtime does not enforce signatures, so published sums and HTTPS are the current guarantee.

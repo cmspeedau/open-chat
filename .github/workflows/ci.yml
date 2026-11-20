@@ -57,17 +57,29 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Runs the formatter and then fails on the diff it made, so the log
-      # shows precisely what nixfmt wanted instead of just "unformatted".
+      # Runs the formatter over the tracked .nix files and fails on the diff
+      # it makes, so the log shows exactly what nixfmt wants. Note the file
+      # list: a bare `nix fmt` hands stdin to nixfmt 1.5 instead of formatting
+      # the tree (verified against nixfmt 1.5.0, the same version nixpkgs
+      # gives this flake), which is what made this gate fail for the wrong
+      # reason.
       - name: nix files are formatted
         if: matrix.runner == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-          nix fmt
-          git diff --exit-code -- flake.nix nix/ || {
-            echo "the diff above is what nixfmt wants applied to flake.nix / nix/" >&2
+          mapfile -t nix_files < <(git ls-files '*.nix')
+          if [ "${#nix_files[@]}" -eq 0 ]; then
+            echo "no tracked .nix files - did checkout miss them?" >&2
             exit 1
-          }
+          fi
+          printf 'checking: %s\n' "${nix_files[*]}"
+          nix fmt -- "${nix_files[@]}"
+          if ! git diff --quiet -- "${nix_files[@]}"; then
+            echo "nixfmt reformatted the files above; commit this diff:" >&2
+            git --no-pager diff -- "${nix_files[@]}"
+            exit 1
+          fi
+          echo "nix files are formatted"
 
       - name: flake check (build, tests, version gate)
         run: nix flake check --print-build-logs
@@ -81,7 +93,7 @@ jobs:
       # committed. Reproducible pins should come from a real evaluation, not
       # from someone transcribing a rev out of a log line.
       - name: upload generated flake.lock
-        if: matrix.runner == 'ubuntu-22.04'
+        if: ${{ !cancelled() && matrix.runner == 'ubuntu-22.04' }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: flake-lock

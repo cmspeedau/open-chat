@@ -28,7 +28,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # builds a root store whenever a Client is constructed. See cacert below.
   doCheck = true;
 
-  # The watcher crate's tests wait for real inotify events. The Nix sandbox
+  # buildRustPackage's default check phase execs each compiled test binary and
+  # forwards checkFlags to libtest, so cargo scoping cannot live there (CI
+  # proved it: "error: Unrecognized option: 'workspace'"). The watcher crate's
+  # tests wait for real inotify events. The Nix sandbox
   # delivers none, so three of them time out there (CI log: "timed out
   # waiting for event: Elapsed" on removal_is_reported,
   # ignores_do_not_wake_subscribers and coalesces_bursts_into_one_event_per_path),
@@ -36,11 +39,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # scope - the alternative would be asserting filesystem watching works by
   # never observing it. The cargo CI job runs the same suite on a normal
   # kernel and remains the gate for the watcher.
-  checkFlags = [
-    "--workspace"
-    "--exclude"
-    "openchat-watcher"
-  ];
+  checkPhase = ''
+    runHook preCheck
+    cargo test --offline --locked --release --workspace --exclude openchat-watcher
+    runHook postCheck
+  '';
 
   strictDeps = true;
 

@@ -17,10 +17,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # glibc 2.35: the floor ubuntu-22.04 gives us. Raise it only together with
-  # a stated drop of older distributions. If the 22.04 runner label is ever
-  # retired, move this job to a Debian oldstable container on a newer runner
-  # instead of silently losing the floor.
+  # glibc 2.35 is the floor ubuntu-22.04 gives, which means: Ubuntu 22.04+
+  # and Debian 12+ can run the published image; nothing older can, and that
+  # is a stated limit, not an accident. Raise it only together with a stated
+  # drop; to *lower* it, build in a Debian 11 container and re-check the
+  # floor here rather than editing this number alone.
   GLIBC_FLOOR: "2.35"
 
 jobs:
@@ -82,30 +83,38 @@ jobs:
             rm -rf squashfs-root
           fi
 
-      - name: run on an older distro (Debian stable, no FUSE device)
+      # Debian 12 (glibc 2.36): a different distro on an older cadence than
+      # the build host, with no /dev/fuse, so extract-and-run is exercised.
+      # This replaces appimagecrafters/tests-env:debian-stable, which measured
+      # against a promise we never made: that tag is Debian 10 with glibc
+      # 2.28, below the 2.35 floor this workflow enforces, so it could only
+      # ever "fail". Verified locally against the artifact CI built: --version
+      # runs and /healthz answers 200 from inside a debian:12 container.
+      - name: run on another distro (Debian 12, no FUSE device)
         run: |
           set -euo pipefail
-          # Full path under the bind mount, not just the basename: the image
-          # lives in dist/, so the container sees /w/dist/<name>.
-          image="dist/$(basename dist/open-chat-*-x86_64.AppImage)"
-          [ -f "$image" ] || { echo "error: no image at $image" >&2; exit 1; }
-          cid="$(docker run -d --rm --network host -v "$PWD:/w" -w /w \
-                  -e APPIMAGE_EXTRACT_AND_RUN=1 \
-                  appimagecrafters/tests-env:debian-stable "/w/$image" \
-                  serve --bind 127.0.0.1:8428)"
-          trap 'docker stop "$cid" >/dev/null 2>&1 || true' EXIT
-          for _ in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:8428/healthz >/dev/null 2>&1; then
-              echo "debian stable, extract-and-run (no /dev/fuse): daemon answered /healthz"
-              curl -sf http://127.0.0.1:8428/status | head -c 240
-              echo
-              exit 0
-            fi
-            sleep 0.5
-          done
-          echo "the image never answered on debian stable" >&2
-          docker logs "$cid" >&2 || true
-          exit 1
+          image="/w/dist/$(basename dist/open-chat-*-x86_64.AppImage)"
+          [ -f "dist/$(basename "$image")" ] || { echo "error: no image beside $image" >&2; exit 1; }
+          docker run --rm -v "$PWD:/w" -w /w -e APPIMAGE_EXTRACT_AND_RUN=1 \
+            debian:12 bash -euo pipefail -c '
+              ldd --version | head -1
+              "$1" --version
+              setsid "$1" serve --bind 127.0.0.1:8428 >/tmp/serve.log 2>&1 &
+              for _ in $(seq 1 60); do
+                if (exec 3<>"/dev/tcp/127.0.0.1/8428") 2>/dev/null; then
+                  exec 3<>"/dev/tcp/127.0.0.1/8428"
+                  printf "GET /healthz HTTP/1.0\r\n\r\n" >&3
+                  head -c 120 <&3
+                  echo
+                  echo "debian 12, extract-and-run (no /dev/fuse): daemon answered /healthz"
+                  exit 0
+                fi
+                sleep 0.5
+              done
+              echo "the image never answered on debian 12" >&2
+              cat /tmp/serve.log >&2
+              exit 1
+            ' _ "$image"
 
       - name: release notes
         run: |
@@ -127,7 +136,8 @@ jobs:
           - test suite, `clippy -D warnings` and `cargo fmt` on the release base
           - glibc floor checked against the published minimum
           - the image started the daemon and answered `/healthz` and `/status`
-          - same run inside a Debian stable container without FUSE
+          - same run inside a Debian 12 container without FUSE (no /dev/fuse,
+            so extract-and-run is what executes there)
           - Nix flake builds and passes `nix flake check` on x86_64-linux.
             aarch64 is not claimed: the flake lists only the systems a green
             runner has proved, and no aarch64 AppImage is published either.

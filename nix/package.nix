@@ -1,6 +1,7 @@
 {
   lib,
   rustPlatform,
+  sqlite,
   src,
 }:
 let
@@ -24,6 +25,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
   doCheck = true;
 
   strictDeps = true;
+
+  # The link line asks for -lsqlite3 (from the sqlite-vec build script) even
+  # though rusqlite compiles SQLite in statically. On a normal distro that
+  # resolves against the distro's libsqlite3.so at link time and then
+  # `--as-needed` drops the dependency, so the binary has no runtime
+  # libsqlite3 requirement - verified here with ldd. The Nix sandbox has no
+  # implicit libsqlite3, so provide one purely to satisfy the linker.
+  buildInputs = [ sqlite ];
 
   # nixpkgs' cargo environment asks aws-lc-sys (through rustls) to link a
   # system-installed AWS-LC; nothing here provides one, so the build script

@@ -66,12 +66,16 @@ mod tests {
     #[test]
     fn pinning_a_governed_child_works_and_survives_exec() {
         // Real end-to-end proof: a child pinned to our cores still runs its
-        // exec'd program fine.
+        // exec'd program fine. `/bin/sh` rather than `/bin/true`, because a
+        // Nix sandbox has no /bin/true - the point is the exec after
+        // sched_setaffinity, not which FHS binary gets to be the witness.
         let set = CpuSet::resolve(CpuCores::Count(1)).unwrap();
-        let out = crate::CommandBuilder::new("/bin/true")
+        let out = crate::CommandBuilder::new("/bin/sh")
             .govern_to(&set)
+            .arg("-c")
+            .arg("exit 0")
             .output()
-            .expect("spawn governed /bin/true");
+            .expect("spawn governed /bin/sh");
         assert!(
             out.status.success(),
             "{}",
@@ -84,15 +88,21 @@ mod tests {
     fn child_reports_pinned_mask() {
         let set = CpuSet::resolve(CpuCores::Count(2)).unwrap();
         assert!(set.len() <= crate::cpu::usable_core_count());
-        // Ask the child what affinity the kernel actually gave it.
+        // Ask the kernel what affinity it actually gave the child, through
+        // procfs instead of `taskset`: no util-linux needed, so this proves
+        // the same thing in a Nix sandbox as on a normal distro.
         let child = crate::CommandBuilder::new("/bin/sh")
             .govern_to(&set)
             .arg("-c")
-            .arg("taskset -pc $$")
+            .arg("cat /proc/self/status")
             .output()
             .expect("spawn sh");
         let text = String::from_utf8_lossy(&child.stdout);
-        let listed = text.rsplit(':').next().unwrap_or_default();
+        let listed = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
+            .unwrap_or_default()
+            .trim();
         let count = listed
             .split(',')
             .flat_map(|part| part.split('-').map(str::trim))
@@ -101,7 +111,7 @@ mod tests {
         assert_eq!(
             count,
             set.len(),
-            "child mask {text:?} != budget {}",
+            "child mask {listed:?} != budget {}",
             set.len()
         );
     }

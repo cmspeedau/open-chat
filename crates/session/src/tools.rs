@@ -849,13 +849,10 @@ mod tests {
             Arc::new(Surfaces::new()),
         );
         let out = reg
-            .dispatch(&call(
-                "run_command",
-                r#"{"cmd":"/bin/echo hi","build":false}"#,
-            ))
+            .dispatch(&call("run_command", r#"{"cmd":"echo hi","build":false}"#))
             .await;
         assert!(out.ok);
-        assert!(out.text.contains("$ /bin/echo hi → ok"), "{}", out.text);
+        assert!(out.text.contains("$ echo hi → ok"), "{}", out.text);
         assert!(out.text.contains("<stdout>\nhi"));
         assert!(out.record.is_some());
     }
@@ -895,13 +892,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
         let g = governor();
-        // Verifier: /bin/grep for "two" so we can watch pass and fail.
+        // Verifier: grep for "two" so we can watch pass and fail.
         let reg = standard_registry(
             g,
             dir.path(),
             mem().await,
             Some(vec![
-                "/bin/grep".into(),
+                "grep".into(),
                 "-q".into(),
                 "two".into(),
                 "f.txt".into(),
@@ -989,7 +986,7 @@ mod tests {
         let out = reg
             .dispatch(&call(
                 "run_command",
-                &json!({"cmd": format!("/bin/cat {}", log.display()), "build": false}).to_string(),
+                &json!({"cmd": format!("cat {}", log.display()), "build": false}).to_string(),
             ))
             .await;
         // cat itself succeeded; the trap fired on the banner it printed.
@@ -1008,7 +1005,7 @@ mod tests {
         );
         // A clean command leaves the ledger untouched.
         let clean = reg
-            .dispatch(&call("run_command", r#"{"cmd":"/bin/true","build":false}"#))
+            .dispatch(&call("run_command", r#"{"cmd":"true","build":false}"#))
             .await;
         assert!(clean.ok);
         assert_eq!(diag.count(), 1);

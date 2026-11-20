@@ -231,7 +231,7 @@ mod tests {
     async fn light_command_round_trips_output() {
         let g = governor(2);
         let runner = ToolRunner::new(&g);
-        let req = ExecRequest::new("/bin/echo", TaskKind::Light).arg("hello");
+        let req = ExecRequest::new("echo", TaskKind::Light).arg("hello");
         let report = runner.run(&req).await.unwrap();
         assert!(report.succeeded());
         assert_eq!(report.stdout.trim(), "hello");
@@ -277,7 +277,7 @@ mod tests {
     async fn timeout_kills_and_reports() {
         let g = governor(2);
         let runner = ToolRunner::new(&g);
-        let mut req = ExecRequest::new("/bin/sleep", TaskKind::Light);
+        let mut req = ExecRequest::new("sleep", TaskKind::Light);
         req.timeout = Duration::from_millis(150);
         let req = req.arg("30");
         let started = std::time::Instant::now();

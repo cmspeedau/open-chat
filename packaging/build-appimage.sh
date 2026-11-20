@@ -166,6 +166,9 @@ fetch_pinned() { # fetch_pinned URL SHA DEST
 fetch_pinned "$TOOLS_URL" "$TOOLS_SHA" "$TOOL"
 fetch_pinned "$RUNTIME_URL" "$RUNTIME_SHA" "$RUNTIME"
 chmod +x "$TOOL"
+# Absolute now, because the build step below runs appimagetool from inside the
+# output directory and a relative path would stop resolving there.
+TOOL="$(CDPATH='' cd -- "$(dirname "$TOOL")" && pwd)/$(basename "$TOOL")"
 
 # mksquashfs only prints option *categories* in -help, so the compressor is
 # probed the honest way: try to build a throwaway squashfs with it.
@@ -206,11 +209,54 @@ export APPIMAGE_EXTRACT_AND_RUN=1 ARCH VERSION
 tool_args=("$AD_ABS" "$RESULT" -n --comp "$COMP" --runtime-file "$RUNTIME_ABS")
 [ -n "$UPDATE_INFORMATION" ] && tool_args+=(--updateinformation "$UPDATE_INFORMATION")
 
+# Ask for delta updates only if the tool that makes them is installed:
+# appimagetool silently skips zsyncmake when it is missing, which would
+# otherwise publish an image whose advertised update channel is empty.
+if [ -n "$UPDATE_INFORMATION" ]; then
+	case "$UPDATE_INFORMATION" in
+		zsync\|*)
+			command -v zsyncmake >/dev/null || {
+				echo "error: updateinformation uses zsync but zsyncmake is not installed" >&2
+				exit 1
+			}
+			;;
+	esac
+fi
+
+# appimagetool is not documented to write the .zsync beside an explicit
+# destination, and reading its behaviour off the binary says why: it execs
+# /usr/bin/zsyncmake (an absolute path, so PATH shims are invisible to it)
+# with `-u <name>` and no `-o`, while running from its own extracted temp
+# directory under APPIMAGE_EXTRACT_AND_RUN. Where that file lands is
+# zsyncmake's business, and on the release run it landed nowhere we could
+# see - the tool printed "generating zsync file" and then cleaned up after
+# itself. So ask appimagetool only to embed the update information, and make
+# the delta manifest ourselves with an explicit output path.
 "$TOOL" "${tool_args[@]}"
 [ -f "$RESULT" ] || { echo "error: appimagetool produced no $RESULT" >&2; exit 1; }
 
 ZSYNC=''
-[ -f "$RESULT.zsync" ] && ZSYNC="$RESULT.zsync"
+if [ -n "$UPDATE_INFORMATION" ]; then
+	case "$UPDATE_INFORMATION" in
+		zsync\|*)
+			# Prefer whatever appimagetool may have left behind, then make our
+			# own so the artifact is guaranteed to exist at a known path.
+			for candidate in "$RESULT.zsync" \
+				"$OUT_DIR_ABS/$(basename "$RESULT").zsync" \
+				"$(basename "$RESULT").zsync"; do
+				[ -f "$candidate" ] && break
+			done
+			if [ ! -f "$RESULT.zsync" ]; then
+				zsyncmake -o "$RESULT.zsync" -u "$(basename "$RESULT")" "$RESULT"
+			fi
+			[ -s "$RESULT.zsync" ] || {
+				echo "error: zsyncmake produced no $RESULT.zsync" >&2
+				exit 1
+			}
+			ZSYNC="$RESULT.zsync"
+			;;
+	esac
+fi
 
 # Delta updates are a promise made to users; if we asked for them and did not
 # get them, that is a build failure, not a silently smaller artifact.

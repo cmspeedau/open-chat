@@ -212,6 +212,20 @@ tool_args=("$AD_ABS" "$RESULT" -n --comp "$COMP" --runtime-file "$RUNTIME_ABS")
 ZSYNC=''
 [ -f "$RESULT.zsync" ] && ZSYNC="$RESULT.zsync"
 
+# Delta updates are a promise made to users; if we asked for them and did not
+# get them, that is a build failure, not a silently smaller artifact.
+if [ -n "$UPDATE_INFORMATION" ]; then
+	case "$UPDATE_INFORMATION" in
+		zsync\|*)
+			if [ -z "$ZSYNC" ]; then
+				echo "error: updateinformation asked for zsync but no $(basename "$RESULT").zsync was produced" >&2
+				echo "       install zsync (provides zsyncmake) and rebuild" >&2
+				exit 1
+			fi
+			;;
+	esac
+fi
+
 # ------------------------------------------------------------ smoke test ----
 echo "smoke test:"
 APPIMAGE_EXTRACT_AND_RUN=1 "$RESULT" --version

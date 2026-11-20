@@ -41,15 +41,11 @@ jobs:
       - name: tests
         run: cargo test --workspace --locked
 
-  # Every system the flake claims is built on a native runner of that
-  # architecture, so the platforms list is a result, not a claim.
+  # x86_64 only for now: the flake lists just the systems a green runner has
+  # proved, so there is nothing to claim on arm that we cannot test.
   nix:
-    name: nix · flake check (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    name: nix · flake check
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -64,7 +60,6 @@ jobs:
       # gives this flake), which is what made this gate fail for the wrong
       # reason.
       - name: nix files are formatted
-        if: matrix.runner == 'ubuntu-22.04'
         run: |
           set -euo pipefail
           mapfile -t nix_files < <(git ls-files '*.nix')
@@ -93,7 +88,7 @@ jobs:
       # committed. Reproducible pins should come from a real evaluation, not
       # from someone transcribing a rev out of a log line.
       - name: upload generated flake.lock
-        if: ${{ !cancelled() && matrix.runner == 'ubuntu-22.04' }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: flake-lock

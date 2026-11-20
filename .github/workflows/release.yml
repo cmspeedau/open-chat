@@ -125,9 +125,9 @@ jobs:
           - glibc floor checked against the published minimum
           - the image started the daemon and answered `/healthz` and `/status`
           - same run inside a Debian stable container without FUSE
-          - Nix flake builds and passes `nix flake check` on x86_64-linux and
-            aarch64-linux (the flake is the aarch64 route; no aarch64 AppImage
-            is published, because the pinned packaging tooling is x86_64 only)
+          - Nix flake builds and passes `nix flake check` on x86_64-linux.
+            aarch64 is not claimed: the flake lists only the systems a green
+            runner has proved, and no aarch64 AppImage is published either.
 
           ## Branding
 

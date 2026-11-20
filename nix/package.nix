@@ -101,10 +101,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     homepage = "https://github.com/cmspeedau/open-chat";
     license = lib.licenses.mit;
     mainProgram = "openchatd";
-    platforms = [
-      "x86_64-linux"
-      "aarch64-linux"
-    ];
+    platforms = [ "x86_64-linux" ];
     sourceProvenance = [ lib.sourceTypes.fromSource ];
   };
 })

@@ -425,7 +425,7 @@ Two supported ways to get the daemon, both built by CI rather than by hand:
 | Artifact | How | Notes |
 | --- | --- | --- |
 | **AppImage** (x86_64) | `curl -LO …/releases/latest/download/open-chat-1.0.0-x86_64.AppImage && chmod +x` then `./open-chat-…AppImage serve` | single file, no install; delta-updatable via the published `.zsync` |
-| **Nix flake** | `nix build .#openchatd`, `nix run .`, `nix develop` | the route for aarch64; version comes from `[workspace.package]` |
+| **Nix flake** | `nix build .#openchatd`, `nix run .`, `nix develop` | x86_64-linux today; version comes from `[workspace.package]` |
 
 `packaging/build-appimage.sh` is the one recipe, used locally and in CI, so the published image is never built differently from the tested one:
 

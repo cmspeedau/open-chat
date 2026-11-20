@@ -378,7 +378,6 @@ impl Engine {
             "checks_skipped": self.checks_skipped,
             "cwd": self.cwd.display().to_string(),
             "git_branch": self.git_branch(),
-            "version": env!("CARGO_PKG_VERSION"),
         })
     }
 

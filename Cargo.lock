@@ -904,7 +904,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "openchat-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "thiserror",
  "tokio",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-daemon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-governor"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "thiserror",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-memory"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "openchat-core",
  "rusqlite",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-session"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "futures-util",
  "openchat-core",
@@ -973,7 +973,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-skills"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-telegram"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "reqwest",
  "serde_json",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-tools"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "openchat-core",
  "openchat-governor",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "openchat-watcher"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "notify",
  "tempfile",

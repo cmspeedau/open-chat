@@ -1,0 +1,144 @@
+name: Release
+
+# Publishing is gated on the tag matching the workspace manifest, a glibc
+# floor check, and the image actually answering /healthz. A tag pushed in
+# mistake therefore produces no artifacts rather than a broken release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # glibc 2.35: the floor ubuntu-22.04 gives us. Raise it only together with
+  # a stated drop of older distributions. If the 22.04 runner label is ever
+  # retired, move this job to a Debian oldstable container on a newer runner
+  # instead of silently losing the floor.
+  GLIBC_FLOOR: "2.35"
+
+jobs:
+  appimage:
+    name: build and publish
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: tag must equal the workspace version
+        id: gate
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          manifest="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspace_version"])')"
+          if [ "$tag" != "$manifest" ]; then
+            echo "refusing to publish: tag is v$tag, the manifest says $manifest" >&2
+            exit 1
+          fi
+          echo "version=$tag" >>"$GITHUB_OUTPUT"
+          echo "gate ok: v$tag == manifest $manifest"
+
+      - name: packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            squashfs-tools zsync desktop-file-utils appstream binutils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: release build
+        run: cargo build --release --locked
+
+      - name: build AppImage (pinned tooling, floor ${{ env.GLIBC_FLOOR }})
+        env:
+          UPDATE_INFORMATION: "zsync|https://github.com/${{ github.repository }}/releases/latest/download/open-chat-${{ steps.gate.outputs.version }}-x86_64.AppImage.zsync"
+        run: |
+          set -euo pipefail
+          packaging/build-appimage.sh \
+            --max-glibc "$GLIBC_FLOOR" \
+            --updateinformation "$UPDATE_INFORMATION"
+
+      - name: what the image borrows from the host
+        run: |
+          set -euo pipefail
+          image="$(echo dist/open-chat-*-x86_64.AppImage)"
+          APPIMAGE_EXTRACT_AND_RUN=1 "$image" --appimage-updateinformation || true
+          rm -rf /tmp/peek && APPIMAGE_EXTRACT_AND_RUN=1 "$image" --appimage-extract >/dev/null 2>&1 || true
+          if [ -d squashfs-root ]; then
+            ldd squashfs-root/usr/bin/openchatd | sed -n 's/^\s*/  /p'
+            objdump -T squashfs-root/usr/bin/openchatd | grep -o 'GLIBC_[0-9.]*' | sort -V | uniq -c | tail -5
+            rm -rf squashfs-root
+          fi
+
+      - name: run on an older distro (Debian stable, no FUSE device)
+        run: |
+          set -euo pipefail
+          image="$(basename dist/open-chat-*-x86_64.AppImage)"
+          cid="$(docker run -d --rm --network host -v "$PWD:/w" -w /w \
+                  -e APPIMAGE_EXTRACT_AND_RUN=1 \
+                  appimagecrafters/tests-env:debian-stable "/w/$image" \
+                  serve --bind 127.0.0.1:8428)"
+          trap 'docker stop "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8428/healthz >/dev/null 2>&1; then
+              echo "debian stable, extract-and-run (no /dev/fuse): daemon answered /healthz"
+              curl -sf http://127.0.0.1:8428/status | head -c 240
+              echo
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "the image never answered on debian stable" >&2
+          docker logs "$cid" >&2 || true
+          exit 1
+
+      - name: release notes
+        run: |
+          set -euo pipefail
+          cat >release-notes.md <<'EOF'
+          ## Install
+
+          ```bash
+          curl -LO https://github.com/cmspeedau/open-chat/releases/latest/download/open-chat-VERSION-x86_64.AppImage
+          chmod +x open-chat-VERSION-x86_64.AppImage
+          ./open-chat-VERSION-x86_64.AppImage serve   # prints the panel URL
+          ```
+
+          Delta updates are enabled: `appimageupdatetool` / AppImageUpdate can
+          update in place from the published `.zsync`.
+
+          ## Verified in CI
+
+          - test suite, `clippy -D warnings` and `cargo fmt` on the release base
+          - glibc floor checked against the published minimum
+          - the image started the daemon and answered `/healthz` and `/status`
+          - same run inside a Debian stable container without FUSE
+          - Nix flake builds and passes `nix flake check` on x86_64-linux and
+            aarch64-linux (the flake is the aarch64 route; no aarch64 AppImage
+            is published, because the pinned packaging tooling is x86_64 only)
+
+          ## Branding
+
+          Interim: the icon is OpenChamber's logo (MIT, attributed in
+          `crates/daemon/assets/NOTICE`). open-chat is a rewrite inspired by
+          OpenChamber and is not affiliated with or endorsed by it.
+          EOF
+          sed -i "s/VERSION/${{ steps.gate.outputs.version }}/g" release-notes.md
+
+      - name: publish
+        uses: softprops/action-gh-release@v3.0.4
+        with:
+          files: |
+            dist/open-chat-*.AppImage
+            dist/open-chat-*.AppImage.zsync
+            dist/SHA256SUMS.txt
+          body_path: release-notes.md
+          fail_on_unmatched_files: true

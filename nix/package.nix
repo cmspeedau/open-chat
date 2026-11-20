@@ -52,6 +52,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
   NIX_SSL_CERT_FILE = "${cacert}/etc/ssl/certs/ca-bundle.crt";
+  # ...and the openssl-style directory, for anything that scans a hashed
+  # cert store instead of reading a single bundle file.
+  SSL_CERT_DIR = "${cacert}/etc/ssl/certs";
 
   # The same reasoning applies after installation: a daemon started from the
   # store should not depend on the host happening to expose a discoverable CA

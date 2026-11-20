@@ -425,7 +425,7 @@ Two supported ways to get the daemon, both built by CI rather than by hand:
 | Artifact | How | Notes |
 | --- | --- | --- |
 | **AppImage** (x86_64) | `curl -LO …/releases/latest/download/open-chat-1.0.0-x86_64.AppImage && chmod +x` then `./open-chat-…AppImage serve` | single file, no install; delta-updatable via the published `.zsync` |
-| **Nix flake** | `nix build .#openchatd`, `nix run .`, `nix develop` | the route for aarch64; version comes from `[workspace.package]` |
+| **Nix flake** | `nix build .#openchatd`, `nix run .`, `nix develop` | x86_64-linux today; version comes from `[workspace.package]` |
 
 `packaging/build-appimage.sh` is the one recipe, used locally and in CI, so the published image is never built differently from the tested one:
 
@@ -433,9 +433,11 @@ Two supported ways to get the daemon, both built by CI rather than by hand:
 - **Portability floor** - `--max-glibc 2.35` compares the binary's highest `GLIBC_*` symbol against the stated minimum and refuses to package anything newer. This is why releases build on ubuntu-22.04: an image assembled on a rolling distro carries that distro's glibc requirement and dies on older ones. `ldd` output is printed so the host-provided libraries are on the record.
 - **Runtime proof, not layout proof** - CI runs the built image and requires `/healthz`, `/status`, `/usage`, the web panel and `/models` to answer, then repeats the run inside a Debian stable container with no `/dev/fuse` (`APPIMAGE_EXTRACT_AND_RUN=1`), so "it packages" and "it serves on someone else's machine" are separate verified claims.
 - **AppStream metadata** - validated in the build with severities parsed from the report. One warning is accepted on purpose: `cid-desktopapp-is-not-rdns`, because a reverse-DNS component id would require a desktop file named after it, and AppImages require the desktop basename to be the application name. appimagetool is passed `-n` because it cannot distinguish a warning from an error (appstreamcli exits 3 for both) and would abort the build on that style note.
+- **TLS trust** - discovered the hard way in CI: reqwest builds a TLS root store whenever a client is *constructed*, even for a client that only talks to `http://127.0.0.1`, and fails if no CA bundle can be found. The flake therefore points the build and the installed binary at nixpkgs' bundle (`SSL_CERT_FILE`); the cargo/AppImage builds get it from the distro's `/etc/ssl/certs`. On a host with neither, set `SSL_CERT_FILE` - this is a runtime requirement of the daemon, not a packaging detail.
+- **Sandbox scope** - `nix flake check` runs the whole suite except the watcher crate: its tests wait for real inotify events and the Nix sandbox delivers none (observed as three timeouts, everything else green), so the flake excludes that crate instead of claiming filesystem watching was proven where it could not be observed. The cargo CI job runs all 204 tests on a normal kernel.
 - **`cargoHash`** - Nix pins the vendored crate graph by hash; it lives in `nix/cargoHash.txt` so a `Cargo.lock` change is a one-line diff, refreshed with `scripts/refresh-cargo-hash.sh --write` (reads the hash nix reports, never invents one).
 
-The release workflow refuses to publish unless the pushed tag equals the workspace manifest version, so `v1.0.0` and `openchatd --version` cannot disagree. Branding remains interim: the icon is OpenChamber's logo under MIT with attribution in `crates/daemon/assets/NOTICE`, and the trademark caveat there still applies.
+The release workflow refuses to publish unless the pushed tag equals the version the built binary reports *and* the workspace manifest declares, so `v1.0.0`, `openchatd --version` and the metadata cannot disagree. (A first attempt read this from `cargo metadata --no-deps`, which reports `workspace_version: null` - caught before it could fail a real tag.) Branding remains interim: the icon is OpenChamber's logo under MIT with attribution in `crates/daemon/assets/NOTICE`, and the trademark caveat there still applies.
 
 ## 🗺️ Roadmap & Milestones
 

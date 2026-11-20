@@ -729,7 +729,7 @@ mod tests {
             tool_reply(
                 "c1",
                 "run_command",
-                json!({"cmd": "/bin/echo seeded", "build": false}),
+                json!({"cmd": "echo seeded", "build": false}),
             ),
             text_reply("done"),
         ]);
@@ -765,7 +765,7 @@ mod tests {
         let registry = harness(
             dir.path(),
             Some(vec![
-                "/bin/grep".into(),
+                "grep".into(),
                 "-q".into(),
                 "^beta$".into(),
                 "v.txt".into(),
@@ -806,7 +806,7 @@ mod tests {
         let registry = harness(
             dir.path(),
             Some(vec![
-                "/bin/grep".into(),
+                "grep".into(),
                 "-q".into(),
                 "never".into(),
                 "v.txt".into(),
@@ -902,7 +902,7 @@ mod tests {
         let asan_cmd = tool_reply(
             "c1",
             "run_command",
-            json!({"cmd": format!("/bin/cat {}", log.display()), "build": false}),
+            json!({"cmd": format!("cat {}", log.display()), "build": false}),
         );
         let provider = Scripted::new(vec![asan_cmd, text_reply("fixed: owner now drops it")]);
         let (tx, mut rx) = broadcast::channel(64);

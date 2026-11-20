@@ -30,20 +30,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - name: tag must equal the workspace version
-        id: gate
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME#v}"
-          manifest="$(cargo metadata --no-deps --format-version 1 \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspace_version"])')"
-          if [ "$tag" != "$manifest" ]; then
-            echo "refusing to publish: tag is v$tag, the manifest says $manifest" >&2
-            exit 1
-          fi
-          echo "version=$tag" >>"$GITHUB_OUTPUT"
-          echo "gate ok: v$tag == manifest $manifest"
-
       - name: packaging tools
         run: |
           sudo apt-get update
@@ -56,6 +42,24 @@ jobs:
 
       - name: release build
         run: cargo build --release --locked
+
+      # Gated on the artifact, not on a manifest read: `cargo metadata
+      # --no-deps` reports workspace_version as null, which would have made
+      # this step fail on every tag. The manifest is still cross-checked, so
+      # a binary and a metadata file that disagree cannot be published.
+      - name: tag must equal the built version
+        id: gate
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          built="$(./target/release/openchatd --version | awk '{print $2}')"
+          manifest="$(awk '/^\[workspace\.package\]/{f=1} f && /^version = /{print $3; exit}' Cargo.toml | tr -d '"')"
+          if [ "$built" != "$tag" ] || [ "$manifest" != "$tag" ]; then
+            echo "refusing to publish: tag is v$tag, the binary says $built, the manifest says $manifest" >&2
+            exit 1
+          fi
+          echo "version=$tag" >>"$GITHUB_OUTPUT"
+          echo "gate ok: tag v$tag == binary $built == manifest $manifest"
 
       - name: build AppImage (pinned tooling, floor ${{ env.GLIBC_FLOOR }})
         env:
@@ -121,9 +125,9 @@ jobs:
           - glibc floor checked against the published minimum
           - the image started the daemon and answered `/healthz` and `/status`
           - same run inside a Debian stable container without FUSE
-          - Nix flake builds and passes `nix flake check` on x86_64-linux and
-            aarch64-linux (the flake is the aarch64 route; no aarch64 AppImage
-            is published, because the pinned packaging tooling is x86_64 only)
+          - Nix flake builds and passes `nix flake check` on x86_64-linux.
+            aarch64 is not claimed: the flake lists only the systems a green
+            runner has proved, and no aarch64 AppImage is published either.
 
           ## Branding
 

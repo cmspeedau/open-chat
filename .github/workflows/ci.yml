@@ -41,21 +41,40 @@ jobs:
       - name: tests
         run: cargo test --workspace --locked
 
-  # Every system the flake claims is built on a native runner of that
-  # architecture, so the platforms list is a result, not a claim.
+  # x86_64 only for now: the flake lists just the systems a green runner has
+  # proved, so there is nothing to claim on arm that we cannot test.
   nix:
-    name: nix · flake check (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    name: nix · flake check
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7.0.1
 
       - uses: cachix/install-nix-action@v31.11.5
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Runs the formatter over the tracked .nix files and fails on the diff
+      # it makes, so the log shows exactly what nixfmt wants. Note the file
+      # list: a bare `nix fmt` hands stdin to nixfmt 1.5 instead of formatting
+      # the tree (verified against nixfmt 1.5.0, the same version nixpkgs
+      # gives this flake), which is what made this gate fail for the wrong
+      # reason.
+      - name: nix files are formatted
+        run: |
+          set -euo pipefail
+          mapfile -t nix_files < <(git ls-files '*.nix')
+          if [ "${#nix_files[@]}" -eq 0 ]; then
+            echo "no tracked .nix files - did checkout miss them?" >&2
+            exit 1
+          fi
+          printf 'checking: %s\n' "${nix_files[*]}"
+          nix fmt -- "${nix_files[@]}"
+          if ! git diff --quiet -- "${nix_files[@]}"; then
+            echo "nixfmt reformatted the files above; commit this diff:" >&2
+            git --no-pager diff -- "${nix_files[@]}"
+            exit 1
+          fi
+          echo "nix files are formatted"
 
       - name: flake check (build, tests, version gate)
         run: nix flake check --print-build-logs
@@ -69,7 +88,7 @@ jobs:
       # committed. Reproducible pins should come from a real evaluation, not
       # from someone transcribing a rev out of a log line.
       - name: upload generated flake.lock
-        if: matrix.runner == 'ubuntu-22.04'
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: flake-lock

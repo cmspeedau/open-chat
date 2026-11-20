@@ -10,13 +10,11 @@
     let
       lib = nixpkgs.lib;
 
-      # Only the platforms the engine is actually built and smoke-tested on.
-      # Adding a system here without a runner that proves it works would be a
-      # claim, not a result.
-      systems = [
-        "x86_64-linux"
-        "aarch64-linux"
-      ];
+      # Only the platforms a runner actually proves. aarch64-linux was here
+      # too and is dropped for now rather than left as an unverified claim:
+      # the flake builds it in principle, but until an arm runner is green we
+      # do not list it as supported.
+      systems = [ "x86_64-linux" ];
 
       eachSystem = f: lib.genAttrs systems (system: f system);
 
@@ -25,7 +23,8 @@
       # What the crate needs to build: manifests, sources (the web assets are
       # compiled in with include_str!), and the licence text.
       srcFor = eachSystem (
-        system: lib.fileset.toSource {
+        system:
+        lib.fileset.toSource {
           root = ./.;
           fileset = lib.fileset.unions [
             ./Cargo.toml
@@ -102,7 +101,8 @@
               pkgs.squashfsTools # mksquashfs + unsquashfs
               pkgs.stdenv.cc # cc builder for aws-lc-sys / bundled SQLite
               pkgs.zsync # zsyncmake for delta updates
-            ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.appimage-run ];
+            ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.appimage-run ];
 
             shellHook = ''
               echo "open-chat dev shell: cargo test --workspace, packaging/build-appimage.sh"

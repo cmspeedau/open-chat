@@ -17,7 +17,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   # sha256 of the vendored crate graph, kept in a file so a Cargo.lock change
   # is a one-line diff. Refresh with scripts/refresh-cargo-hash.sh.
-  cargoHash = lib.removeTrailingNewline (builtins.readFile ./cargoHash.txt);
+  cargoHash = lib.trim (builtins.readFile ./cargoHash.txt);
 
   # The suite is a real gate: it binds loopback ports against in-process mock
   # providers, so it needs no network and runs inside the sandbox.

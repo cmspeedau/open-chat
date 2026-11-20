@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: [v*]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Lints and the whole test suite. ubuntu-22.04 is deliberate: the runners
+  # we ship from set the glibc floor, so the CI build must share it.
+  rust:
+    name: rust · fmt, clippy, tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: formatting
+        run: cargo fmt --all --check
+
+      - name: clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: tests
+        run: cargo test --workspace --locked
+
+  # Every system the flake claims is built on a native runner of that
+  # architecture, so the platforms list is a result, not a claim.
+  nix:
+    name: nix · flake check (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: cachix/install-nix-action@v31.11.5
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: flake check (build, tests, version gate)
+        run: nix flake check --print-build-logs
+
+      - name: the binary runs
+        run: |
+          nix build --print-build-logs
+          result/bin/openchatd --version
+
+  # Builds the AppImage with the same script and the same pinned tooling the
+  # release job uses, then proves it actually serves.
+  appimage:
+    name: appimage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            squashfs-tools zsync desktop-file-utils appstream binutils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.3
+
+      - name: release build
+        run: cargo build --release --locked
+
+      - name: build AppImage (glibc floor gate: 2.35)
+        run: packaging/build-appimage.sh --max-glibc 2.35
+
+      - name: smoke test on the build host
+        run: |
+          set -euo pipefail
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/open-chat-*-x86_64.AppImage --version
+
+      - name: the daemon serves from inside the image
+        run: |
+          set -euo pipefail
+          APPIMAGE_EXTRACT_AND_RUN=1 setsid ./dist/open-chat-*-x86_64.AppImage \
+            serve --bind 127.0.0.1:8427 >/tmp/serve.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8427/healthz >/dev/null 2>&1; then
+              echo "healthz ok"
+              curl -sf http://127.0.0.1:8427/status | head -c 300
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "daemon never answered /healthz" >&2
+          cat /tmp/serve.log >&2
+          exit 1
+
+      - name: upload image for inspection
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: appimage-ci
+          path: dist/
+          retention-days: 7

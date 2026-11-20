@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>open-chat.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>open-chat</name>
+  <summary>Headless agent workspace engine with a browser session panel</summary>
+  <description>
+    <p>
+      open-chat runs the agent loop itself: a Rust daemon that composes every
+      prompt from fixed frames, binds language and surface skill packs to the
+      task, patches files as surgical diffs instead of rewritten blobs, keeps
+      hybrid SQLite memory across turns, and throttles its own CPU use so a
+      build queue cannot lock up the machine. Clients are thin: web panel,
+      Telegram, or the CLI.
+    </p>
+    <p>
+      Anti-slop rules are engine law, not prompt advice: swallowed errors,
+      narrative comments and filler prose are detected and reported, and any
+      check the machine cannot run is disclosed rather than passed silently.
+    </p>
+  </description>
+  <categories>
+    <category>Development</category>
+  </categories>
+  <keywords>
+    <keyword>agent</keyword>
+    <keyword>daemon</keyword>
+    <keyword>llm</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/cmspeedau/open-chat</url>
+  <url type="bugtracker">https://github.com/cmspeedau/open-chat/issues</url>
+  <developer id="io.github.cmspeedau">
+    <name>cmspeedau</name>
+  </developer>
+  <launchable type="desktop-id">open-chat.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-11-20">
+      <description>
+        <p>First tagged release: governor, memory, compositor, patch engine,
+        skill registry, web panel, Telegram bridge, OpenCode model gateway
+        and the usage ledger.</p>
+      </description>
+    </release>
+  </releases>
+</component>

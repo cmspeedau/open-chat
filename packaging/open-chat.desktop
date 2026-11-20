@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=open-chat
+GenericName=Agent workspace daemon
+Comment=Headless agent workspace engine with a browser session panel
+Exec=AppRun serve
+Icon=open-chat
+Terminal=true
+Categories=Development;
+Keywords=agent;llm;daemon;workspace;code;
+StartupNotify=false

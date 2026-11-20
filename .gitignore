@@ -1,3 +1,7 @@
 /target
+/build
+/dist
+/.cache
+/squashfs-root
 .openchat/
 .openchamber/

@@ -1,0 +1,16 @@
+#!/bin/sh
+# open-chat AppImage entry point.
+#
+# Small on purpose: `exec` so SIGINT/SIGTERM reach the daemon instead of
+# dying in a wrapper, and every path is $APPDIR-relative - nothing here
+# knows about /usr, so the image works mounted or extracted.
+set -eu
+
+APPDIR="${APPDIR:-$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)}"
+
+# No arguments: start the daemon (the web panel prints its own URL).
+if [ "$#" -eq 0 ]; then
+	set -- serve
+fi
+
+exec "$APPDIR/usr/bin/openchatd" "$@"

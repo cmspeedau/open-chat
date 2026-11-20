@@ -86,7 +86,7 @@ jobs:
       - name: release build
         run: cargo build --release --locked
 
-      - name: build AppImage (glibc floor gate: 2.35)
+      - name: "build AppImage (glibc floor gate: 2.35)"
         run: packaging/build-appimage.sh --max-glibc 2.35
 
       - name: smoke test on the build host
